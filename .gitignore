@@ -13,6 +13,8 @@ dist/
 token*
 *token*.txt
 modem.token*
+secrets/
+
 
 # Local configs with machine-specific values (templates ship in deploy/)
 config.json

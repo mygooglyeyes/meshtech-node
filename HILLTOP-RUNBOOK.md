@@ -27,7 +27,7 @@ accepted stand-down). Abort at any time = one command (bottom).
 
 1.1  Run the manager (needs sudo for systemd + secrets):
 
-    sudo ./manage.sh setup
+    sudo ./manage.sh install
 
     It does, in order: venv + dependencies -> generates the modem
     token under secrets/ (mode 600, printed ONCE - save it) -> writes
@@ -114,7 +114,12 @@ accepted stand-down). Abort at any time = one command (bottom).
 
 ## DAY-TO-DAY (the whole surface)
 
-    ./manage.sh start | stop | restart | status | logs | verify
+    sudo ./manage.sh          # interactive menu (whiptail when present)
+
+    # or direct commands:
+    sudo ./manage.sh install | configure | passwords | verify
+    sudo ./manage.sh start | stop | restart | status | logs
+    sudo ./manage.sh uninstall   # removes the service; asks before deleting files
 
 ## EXIT / ABORT (back to the old world in one line)
 
