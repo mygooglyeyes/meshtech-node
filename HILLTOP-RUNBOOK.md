@@ -15,13 +15,17 @@ accepted stand-down). Abort at any time = one command (bottom).
 
 ## PHASE 0 - GET THE CODE ONTO THE BOX (one command, your home folder)
 
+## PHASE 0 - GET THE SOURCE (home = git source, never the run home)
+
 0.1  From your home folder on hilltop:
 
     git clone <repo-url> meshtech-node && cd meshtech-node
 
-    (until the repo has a remote, copy the working folder up instead:
-     `scp -r C:\\projects\\meshtech-node USER@hilltop:~` from Windows,
-     then `cd ~/meshtech-node` - same result)
+    THE LAYOUT CONTRACT: this clone is the SOURCE only. `install`
+    copies the program into /opt/meshtech-node (root-owned) and that
+    is where it runs - venv, secrets, configs, service all live there.
+    Nothing root-owned is ever created in your home folder. Updates:
+    git pull in this folder, run install again, restart the service.
 
 ## PHASE 1 - ONE-TIME SETUP (guided, self-contained)
 

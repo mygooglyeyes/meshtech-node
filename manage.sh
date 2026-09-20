@@ -90,7 +90,7 @@ need_root() {
 }
 
 require_installed() {
-  if [[ ! -x "$PY" ]]; then
+  if [[ ! -x "$APPDIR/.venv/bin/python" ]]; then
     msg "Not installed" "Run 'sudo ./manage.sh install' first."
     exit 1
   fi
@@ -118,19 +118,36 @@ ask_default() {
 # defaults ARE the shipped US-band settings; nothing is read from any
 # other software on the box.
 guided_radio_questions() {
-  local f=deploy/modem.conf
+  local f="$APPDIR/modem.conf"
+  [[ -f $f ]] || f=deploy/modem.conf
   echo
   echo "-- Radio settings -------------------------------------------------"
   echo "These set how the radio listens. The defaults are the standard"
   echo "US 915 MHz mesh band - press Enter to accept each one."
   echo
-  set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(grep -E '^frequency_hz *=' $f | awk '{print $3}')")" modem.conf
-  set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(grep -E '^spreading_factor *=' $f | awk '{print $3}')")" modem.conf
-  set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(grep -E '^bandwidth_hz *=' $f | awk '{print $3}')")" modem.conf
-  set_conf sync_word         "$(ask_default "Sync word in hex (0x12 = standard)" "$(grep -E '^sync_word *=' $f | awk '{print $3}')")" modem.conf
-  set_conf preamble_length   "$(ask_default "Preamble length (32 = standard)" "$(grep -E '^preamble_length *=' $f | awk '{print $3}')")" modem.conf
+  set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(grep -E '^frequency_hz *=' $f | awk '{print $3}')")" "$f"
+  set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(grep -E '^spreading_factor *=' $f | awk '{print $3}')")" "$f"
+  set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(grep -E '^bandwidth_hz *=' $f | awk '{print $3}')")" "$f"
+  set_conf sync_word         "$(ask_default "Sync word in hex (0x12 = standard)" "$(grep -E '^sync_word *=' $f | awk '{print $3}')")" "$f"
+  set_conf preamble_length   "$(ask_default "Preamble length (32 = standard)" "$(grep -E '^preamble_length *=' $f | awk '{print $3}')")" "$f"
   echo
-  echo "Radio settings saved to modem.conf."
+  echo "-- Radio board (the hardware the radio chip sits on) ----------------"
+  echo "The pin wiring differs per board. Enter accepts the standard one."
+  echo "  1) pimesh-1w-v2   - the 1-watt PiMesh board v2 (standard)"
+  echo "  2) pimesh-v2-draft- a PiMesh v2 with external LNA + RF switch"
+  local prof
+  while true; do
+    read -rp "Board [1]: " b
+    case "${b:-1}" in
+      1) prof=pimesh-1w-v2 ;;
+      2) prof=pimesh-v2-draft ;;
+      *) echo "please type 1 or 2"; continue ;;
+    esac
+    break
+  done
+  set_conf pin_profile "$prof" "$f"
+  echo
+  echo "Radio settings saved to $f."
 }
 
 # show the modem password once and WAIT until the user confirms saved
@@ -151,44 +168,55 @@ password_gate() {
   done
 }
 
+# sync_to_appdir - copy the program source into $APPDIR (the run home).
+# Preserves the installed venv, secrets, and live configs across runs.
+sync_to_appdir() {
+  mkdir -p "$APPDIR"
+  rsync -a --delete \
+    --exclude '.venv' --exclude 'secrets' --exclude '.git' \
+    --exclude 'modem.conf' --exclude 'config.json' \
+    src app cleanmodem deploy tests pyproject.toml "$APPDIR"/
+}
+
 do_install() {
   need_root install
   echo "== meshtech-node install =="
-  echo "This installs the program, asks you a few questions, and can"
-  echo "start the service at the end. Nothing is put on the air by this"
-  echo "install: transmit stays off."
+  echo "This copies the program to $APPDIR, asks you a few questions,"
+  echo "and can start the service at the end. Nothing is put on the air"
+  echo "by this install: transmit stays off."
   echo
-  test -d "$VENV" || python3 -m venv "$VENV"
+  echo "- copying program to $APPDIR ..."
+  sync_to_appdir
   echo "- installing python dependencies (this can take a few minutes)..."
-  "$VENV/bin/pip" install --quiet --upgrade pip
-  "$VENV/bin/pip" install --quiet -e . aiohttp pycryptodome
-  "$PY" -c "import spidev" 2>/dev/null \
-    || "$VENV/bin/pip" install --quiet spidev \
+  [[ -d "$APPDIR/.venv" ]] || python3 -m venv "$APPDIR/.venv"
+  "$APPDIR/.venv/bin/pip" install --quiet --upgrade pip
+  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome
+  "$APPDIR/.venv/bin/python" -c "import spidev" 2>/dev/null \
+    || "$APPDIR/.venv/bin/pip" install --quiet spidev \
     || echo "WARNING: spidev unavailable - radio will not start"
-  "$PY" -c "import gpiod" 2>/dev/null \
-    || "$VENV/bin/pip" install --quiet gpiod \
+  "$APPDIR/.venv/bin/python" -c "import gpiod" 2>/dev/null \
+    || "$APPDIR/.venv/bin/pip" install --quiet gpiod \
     || echo "WARNING: gpiod unavailable - radio will not start"
-  cp -n deploy/config.json config.json 2>/dev/null || true
-  cp -n deploy/modem.conf  modem.conf  2>/dev/null || true
-  # password: generate once, show once, gate on confirmation
-  if [[ -f "$SECRETS/modem.token" ]]; then
-    echo "- modem password already exists (secrets/modem.token) - keeping it"
+  mkdir -p "$APPDIR/secrets" && chmod 700 "$APPDIR/secrets"
+  if [[ -f "$APPDIR/secrets/modem.token" ]]; then
+    echo "- modem password already exists - keeping it"
   else
-    mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
     local TOKEN
-    TOKEN=$("$PY" -c "import secrets; print(secrets.token_urlsafe(24))")
-    umask 077; printf '%s\n' "$TOKEN" > "$SECRETS/modem.token"
-    chmod 600 "$SECRETS/modem.token"
+    TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+    umask 077; printf '%s\n' "$TOKEN" > "$APPDIR/secrets/modem.token"
+    chmod 600 "$APPDIR/secrets/modem.token"
     password_gate "$TOKEN"
   fi
-  # guided configuration (self-contained)
+  [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
+  [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
-  # systemd registration
-  cp deploy/meshtech-node.service /etc/systemd/system/
+  sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
+  sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
+  echo "- writing the service file (runs from $APPDIR)"
+  sed "s|@APPDIR@|$APPDIR|g" deploy/meshtech-node.service > /etc/systemd/system/${SERVICE}.service
   systemctl daemon-reload
   systemctl enable "$SERVICE" >/dev/null
   echo "- service registered (starts on boot when you start it)"
-  # key check, in context
   echo
   echo "-- Channel key check ----------------------------------------------"
   do_verify
@@ -196,7 +224,6 @@ do_install() {
   echo "for its #scope channel. They must match or the radios will not"
   echo "understand each other."
   echo
-  # start now? one question, real words
   if yesno "Start the meshtech-node service now"; then
     systemctl start "$SERVICE"
     sleep 2
@@ -207,17 +234,19 @@ do_install() {
     echo "Not started. When you are ready:  sudo ./manage.sh start"
   fi
   echo
-  echo "Install complete."
+  echo "Install complete. The program runs from $APPDIR;"
+  echo "this folder stays as your git source (updates: git pull, then"
+  echo "sudo ./manage.sh install again, then restart)."
 }
 
 do_passwords() {
   need_root passwords
-  mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+  mkdir -p "$APPDIR/secrets" && chmod 700 "$APPDIR/secrets"
   local TOKEN
-  TOKEN=$("$PY" -c "import secrets; print(secrets.token_urlsafe(24))")
-  umask 077; printf '%s\n' "$TOKEN" > "$SECRETS/modem.token"
-  chmod 600 "$SECRETS/modem.token"
-  echo "New modem password generated (secrets/modem.token, mode 600)."
+  TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+  umask 077; printf '%s\n' "$TOKEN" > "$APPDIR/secrets/modem.token"
+  chmod 600 "$APPDIR/secrets/modem.token"
+  echo "New modem password generated ($APPDIR/secrets/modem.token, mode 600)."
   password_gate "$TOKEN"
   echo
   echo "If the service is running, restart it to use the new password:"
@@ -227,32 +256,31 @@ do_passwords() {
 do_configure() {
   need_root configure
   require_installed
-  [[ -f modem.conf ]] || cp deploy/modem.conf modem.conf
-  [[ -f config.json ]] || cp deploy/config.json config.json
+  local MC="$APPDIR/modem.conf" CJ="$APPDIR/config.json"
   while true; do
     local cur
-    cur=$(grep -E "^frequency_hz *=" modem.conf | awk '{print $3}')
+    cur=$(grep -E "^frequency_hz *=" "$MC" | awk '{print $3}')
     local pick
     pick=$(menu "configure meshtech-node" \
       "frequency"  "radio frequency Hz        (cur: ${cur:-?})" \
-      "sf"         "spreading factor           (cur: $(grep -E '^spreading_factor *=' modem.conf | awk '{print $3}'))" \
-      "bandwidth"  "bandwidth Hz               (cur: $(grep -E '^bandwidth_hz *=' modem.conf | awk '{print $3}'))" \
-      "syncword"   "sync word (hex)            (cur: $(grep -E '^sync_word *=' modem.conf | awk '{print $3}'))" \
-      "preamble"   "preamble length            (cur: $(grep -E '^preamble_length *=' modem.conf | awk '{print $3}'))" \
+      "sf"         "spreading factor           (cur: $(grep -E '^spreading_factor *=' "$MC" | awk '{print $3}'))" \
+      "bandwidth"  "bandwidth Hz               (cur: $(grep -E '^bandwidth_hz *=' "$MC" | awk '{print $3}'))" \
+      "syncword"   "sync word (hex)            (cur: $(grep -E '^sync_word *=' "$MC" | awk '{print $3}'))" \
+      "preamble"   "preamble length            (cur: $(grep -E '^preamble_length *=' "$MC" | awk '{print $3}'))" \
       "power"      "TX power dBm (UNUSED while TX off)" \
-      "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' config.json | grep -oE '[0-9]+'))" \
+      "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
       "back"       "save nothing and go back")
     case "$pick" in
-      frequency) set_conf frequency_hz "$(inputbox "frequency_hz" "$cur")" modem.conf ;;
-      sf)        set_conf spreading_factor "$(inputbox "spreading_factor (5-12)" "$(grep -E '^spreading_factor *=' modem.conf | awk '{print $3}')")" modem.conf ;;
-      bandwidth) set_conf bandwidth_hz "$(inputbox "bandwidth_hz (62500 = 62.5 kHz)" "$(grep -E '^bandwidth_hz *=' modem.conf | awk '{print $3}')")" modem.conf ;;
-      syncword)  set_conf sync_word "$(inputbox "sync_word (hex, e.g. 0x12)" "$(grep -E '^sync_word *=' modem.conf | awk '{print $3}')")" modem.conf ;;
-      preamble)  set_conf preamble_length "$(inputbox "preamble_length" "$(grep -E '^preamble_length *=' modem.conf | awk '{print $3}')")" modem.conf ;;
-      power)     set_conf tx_power_dbm "$(inputbox "tx_power_dbm" "$(grep -E '^tx_power_dbm *=' modem.conf | awk '{print $3}')")" modem.conf ;;
+      frequency) set_conf frequency_hz "$(inputbox "frequency_hz" "$cur")" "$MC" ;;
+      sf)        set_conf spreading_factor "$(inputbox "spreading_factor (5-12)" "$(grep -E '^spreading_factor *=' "$MC" | awk '{print $3}')")" "$MC" ;;
+      bandwidth) set_conf bandwidth_hz "$(inputbox "bandwidth_hz (62500 = 62.5 kHz)" "$(grep -E '^bandwidth_hz *=' "$MC" | awk '{print $3}')")" "$MC" ;;
+      syncword)  set_conf sync_word "$(inputbox "sync_word (hex, e.g. 0x12)" "$(grep -E '^sync_word *=' "$MC" | awk '{print $3}')")" "$MC" ;;
+      preamble)  set_conf preamble_length "$(inputbox "preamble_length" "$(grep -E '^preamble_length *=' "$MC" | awk '{print $3}')")" "$MC" ;;
+      power)     set_conf tx_power_dbm "$(inputbox "tx_power_dbm" "$(grep -E '^tx_power_dbm *=' "$MC" | awk '{print $3}')")" "$MC" ;;
       webserve)
         local port
-        port=$(inputbox "web app port" "$(grep -oE '"port": [0-9]+' config.json | grep -oE '[0-9]+')")
-        sed -i "s|\"port\": [0-9]*,|\"port\": ${port},|" config.json ;;
+        port=$(inputbox "web app port" "$(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+')")
+        sed -i "s|\"port\": [0-9]*,|\"port\": ${port},|" "$CJ" ;;
       back) return ;;
     esac
   done
@@ -261,7 +289,7 @@ do_configure() {
 do_verify() {
   require_installed
   echo "== channel key check (what this machine derives) =="
-  PYTHONPATH=src:"$PWD" "$PY" - <<'PYEOF'
+  PYTHONPATH="$APPDIR/src":"$APPDIR" "$APPDIR/.venv/bin/python" - <<'PYEOF'
 from meshtech_node.packets import derive_channel_keys
 name = "#scope"
 ch, aes, hmac_key = derive_channel_keys(name)
@@ -271,8 +299,8 @@ print(f"aes key      : {aes.hex()}")
 print(f"hmac key     : {hmac_key.hex()}")
 PYEOF
   echo
-  echo "== radio settings in use (modem.conf) =="
-  grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length)" modem.conf \
+  echo "== radio settings in use ($APPDIR/modem.conf) =="
+  grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length|pin_profile)" "$APPDIR/modem.conf" \
     || echo "modem.conf not found - run sudo ./manage.sh install first"
 }
 
@@ -283,11 +311,11 @@ do_uninstall() {
   rm -f /etc/systemd/system/${SERVICE}.service
   systemctl daemon-reload
   echo "service removed."
-  if yesno "Also delete the software in this folder (venv, configs, SECRETS)?"; then
-    rm -rf "$VENV" "$SECRETS" config.json modem.conf
-    echo "software removed. The repo files themselves remain."
+  if yesno "Also delete the program in $APPDIR (venv, configs, SECRETS)?"; then
+    rm -rf "$APPDIR"
+    echo "$APPDIR removed. This git clone remains as the source."
   else
-    echo "kept everything in this folder (secrets included)."
+    echo "kept $APPDIR (secrets included)."
   fi
   echo "NOTE: the openhop repeater is NOT touched - restore it with:"
   echo "  sudo systemctl enable --now openhop-repeater"
@@ -324,7 +352,7 @@ do_menu() {
       restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; pause ;;
       status)    systemctl --no-pager --lines 15 status "$SERVICE" || true; pause ;;
       logs)      journalctl -u "$SERVICE" -f --no-pager; pause ;;
-      bench)     test -f config.json || cp deploy/config.json config.json; PYTHONPATH=src:"$PWD" "$PY" -m meshtech_node --config config.json --bench-no-radio; pause ;;
+      bench)     require_installed; PYTHONPATH="$APPDIR/src":"$APPDIR" "$APPDIR/.venv/bin/python" -m meshtech_node --config "$APPDIR/config.json" --bench-no-radio; pause ;;
       uninstall) do_uninstall; return ;;
       quit)      echo "bye"; return ;;
     esac
@@ -344,6 +372,6 @@ case "$cmd" in
   restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true ;;
   status)    systemctl --no-pager --lines 15 status "$SERVICE" || true ;;
   logs)      journalctl -u "$SERVICE" -f --no-pager ;;
-  bench)     test -f config.json || cp deploy/config.json config.json; PYTHONPATH=src:"$PWD" "$PY" -m meshtech_node --config config.json --bench-no-radio ;;
+  bench)     require_installed; PYTHONPATH="$APPDIR/src":"$APPDIR" "$APPDIR/.venv/bin/python" -m meshtech_node --config "$APPDIR/config.json" --bench-no-radio ;;
   *)         sed -n '2,30p' "$0" ;;
 esac
