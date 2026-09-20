@@ -285,6 +285,11 @@ do_uninstall() {
   echo "  sudo systemctl enable --now openhop-repeater"
 }
 
+# pause <title> - keep output readable in menu mode: wait for Enter
+pause() {
+  [[ $HAVE_WHIP -eq 1 ]] && read -rp "Press Enter to return to the menu..." _ || true
+}
+
 do_menu() {
   while true; do
     local pick
@@ -305,12 +310,12 @@ do_menu() {
       configure) do_configure ;;
       verify)    do_verify; [[ $HAVE_WHIP -eq 1 ]] && read -rp "Enter to continue..." _ ;;
       passwords) do_passwords ;;
-      start)     need_root start; systemctl start "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true ;;
-      stop)      need_root stop; systemctl stop "$SERVICE"; echo "stopped" ;;
-      restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true ;;
-      status)    systemctl --no-pager --lines 15 status "$SERVICE" || true ;;
-      logs)      journalctl -u "$SERVICE" -f --no-pager ;;
-      bench)     test -f config.json || cp deploy/config.json config.json; PYTHONPATH=src:"$PWD" "$PY" -m meshtech_node --config config.json --bench-no-radio ;;
+      start)     need_root start; systemctl start "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; pause ;;
+      stop)      need_root stop; systemctl stop "$SERVICE"; echo "stopped"; pause ;;
+      restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; pause ;;
+      status)    systemctl --no-pager --lines 15 status "$SERVICE" || true; pause ;;
+      logs)      journalctl -u "$SERVICE" -f --no-pager; pause ;;
+      bench)     test -f config.json || cp deploy/config.json config.json; PYTHONPATH=src:"$PWD" "$PY" -m meshtech_node --config config.json --bench-no-radio; pause ;;
       uninstall) do_uninstall; return ;;
     esac
   done
@@ -322,7 +327,7 @@ case "$cmd" in
   install)   do_install ;;
   configure) do_configure ;;
   passwords) do_passwords ;;
-  verify)    do_verify ;;
+  verify)    do_verify; pause ;;
   uninstall) do_uninstall ;;
   start)     need_root start; systemctl start "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true ;;
   stop)      need_root stop; systemctl stop "$SERVICE"; echo "stopped" ;;
