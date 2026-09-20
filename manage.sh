@@ -150,24 +150,6 @@ guided_radio_questions() {
   echo "Radio settings saved to $f."
 }
 
-# show the modem password once and WAIT until the user confirms saved
-password_gate() {
-  echo
-  echo "==================================================================="
-  echo "  MODEM PASSWORD - shown this one time only"
-  echo
-  echo "  $1"
-  echo
-  echo "  Save it in your password manager NOW. It is stored on this"
-  echo "  machine in secrets/modem.token and never shown again."
-  echo "==================================================================="
-  while true; do
-    read -rp "Type saved and press Enter to continue: " a
-    [[ "${a,,}" == saved ]] && break
-    echo "please type: saved"
-  done
-}
-
 # sync_to_appdir - copy the program source into $APPDIR (the run home).
 # Preserves the installed venv, secrets, and live configs across runs.
 sync_to_appdir() {
@@ -199,13 +181,15 @@ do_install() {
     || echo "WARNING: gpiod unavailable - radio will not start"
   mkdir -p "$APPDIR/secrets" && chmod 700 "$APPDIR/secrets"
   if [[ -f "$APPDIR/secrets/modem.token" ]]; then
-    echo "- modem password already exists - keeping it"
+    echo "- internal radio secret already exists - keeping it"
   else
-    local TOKEN
-    TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
-    umask 077; printf '%s\n' "$TOKEN" > "$APPDIR/secrets/modem.token"
+    umask 077
+    python3 -c 'import secrets; print(secrets.token_urlsafe(24))' \
+      > "$APPDIR/secrets/modem.token"
     chmod 600 "$APPDIR/secrets/modem.token"
-    password_gate "$TOKEN"
+    umask 022
+    echo "- internal radio secret generated (stored root-only; the user"
+    echo "  never needs it - rotate any time with: sudo ./manage.sh passwords)"
   fi
   [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
@@ -242,12 +226,12 @@ do_install() {
 do_passwords() {
   need_root passwords
   mkdir -p "$APPDIR/secrets" && chmod 700 "$APPDIR/secrets"
-  local TOKEN
-  TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
-  umask 077; printf '%s\n' "$TOKEN" > "$APPDIR/secrets/modem.token"
+  umask 077
+  python3 -c 'import secrets; print(secrets.token_urlsafe(24))' \
+    > "$APPDIR/secrets/modem.token"
   chmod 600 "$APPDIR/secrets/modem.token"
-  echo "New modem password generated ($APPDIR/secrets/modem.token, mode 600)."
-  password_gate "$TOKEN"
+  umask 022
+  echo "Internal radio secret rotated ($APPDIR/secrets/modem.token, mode 600)."
   echo
   echo "If the service is running, restart it to use the new password:"
   echo "  sudo ./manage.sh restart"
