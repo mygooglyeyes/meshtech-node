@@ -214,6 +214,10 @@ do_install() {
     echo "  never needs it - rotate any time with: sudo ./manage.sh passwords)"
   fi
   [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
+  # Migrate a pre-2026-09-20 modem.conf that used the LoRa notation
+  # (coding_rate 5 = CR 4/5): cleanmodem's parser takes the INDEX
+  # (1..4). 5 meant CR 4/5 then; write the index 1 that means the same.
+  sed -i 's/^coding_rate *= *5/coding_rate = 1/' "$APPDIR/modem.conf"
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
   guided_web_question
@@ -309,6 +313,17 @@ PYEOF
   echo "== radio settings in use ($APPDIR/modem.conf) =="
   grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length|pin_profile)" "$APPDIR/modem.conf" \
     || echo "modem.conf not found - run sudo ./manage.sh install first"
+  # Fail LOUDLY on a config the radio parser would reject (the
+  # coding_rate 5-out-of-range crash, caught on the box 2026-09-20).
+  if PYTHONPATH="$APPDIR/cleanmodem":"$APPDIR/src" "$APPDIR/.venv/bin/python" -c \
+    "import sys; sys.path.insert(0, '$APPDIR/cleanmodem'); from cleanmodem.config import build_config, load_config; build_config(load_config('$APPDIR/modem.conf'))" 2>/tmp/mn-verify.err; then
+    rm -f /tmp/mn-verify.err
+    echo "config parses clean - the radio will accept it"
+  else
+    echo "CONFIG ERROR - the radio would REFUSE to start:"
+    cat /tmp/mn-verify.err
+    rm -f /tmp/mn-verify.err
+  fi
 }
 
 do_uninstall() {
