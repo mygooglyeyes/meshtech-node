@@ -53,14 +53,14 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     )
     modem = None
     if not bench_no_radio:
-        # REAL MODE: the loopback link to cleanmodem (which owns the
-        # SPI radio on the box). RX feed only - the sender still
+        # REAL MODE: the loopback link to the embedded radio server
+        # (or a standalone cleanmodem). RX feed only - the sender still
         # refuses to transmit (TX-off is the shell's invariant here,
         # flipped later only by Brett's explicit gate).
         from .modemlink import ModemTransport
         token = _modem_token(settings)
-        modem = ModemTransport(settings.companion_host,
-                               settings.companion_port, token)
+        host, port = _modem_endpoint(settings)
+        modem = ModemTransport(host, port, token)
         sender.modem = modem
     source = RawPacketSource(
         transport=modem,           # None in bench mode: source idles
@@ -129,6 +129,35 @@ def _modem_token(settings) -> str:
     except OSError as exc:
         log.warning("modem token file %s unreadable (%s)", path, exc)
         return ""
+
+
+def _modem_endpoint(settings) -> tuple:
+    """(host, port) the node dials for its own radio link.
+
+    SINGLE-PROCESS truth (the 5052/5055 mismatch, caught on the box
+    2026-09-20): when the node EMBEDS cleanmodem (modem_conf set), the
+    server binds the endpoint from modem.conf - so that is what the
+    node must dial, not the plugin-era companion default. One source
+    of truth: read modem.conf, never a second hardcoded port.
+    Falls back to the settings' companion endpoint (bench/standalone
+    cleanmodem layouts).
+    """
+    modem_conf = getattr(settings, "modem_conf", "")
+    if modem_conf:
+        try:
+            cfg = _load_modem_config(modem_conf)
+            return cfg.host, cfg.port
+        except Exception as exc:
+            log.warning("could not derive modem endpoint from %s (%s) - "
+                        "falling back to companion endpoint", modem_conf, exc)
+    return settings.companion_host, settings.companion_port
+
+
+def _load_modem_config(modem_conf: str):
+    """cleanmodem's parsed config (factored out so tests can inject
+    failures)."""
+    from cleanmodem.config import load_config, build_config
+    return build_config(load_config(modem_conf))
 
 
 def _token(settings) -> Optional[str]:
