@@ -100,10 +100,58 @@ set_conf() {
 
 # ------------------------------------------------------------- actions --
 
+# ask_default <question> <default> -> the answer (Enter = default)
+ask_default() {
+  read -rp "$1 [$2]: " a
+  echo "${a:-$2}"
+}
+
+# guided radio questions -> modem.conf. Fully self-contained: the
+# defaults ARE the shipped US-band settings; nothing is read from any
+# other software on the box.
+guided_radio_questions() {
+  local f=deploy/modem.conf
+  echo
+  echo "-- Radio settings -------------------------------------------------"
+  echo "These set how the radio listens. The defaults are the standard"
+  echo "US 915 MHz mesh band - press Enter to accept each one."
+  echo
+  set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(grep -E '^frequency_hz *=' $f | awk '{print $3}')")" modem.conf
+  set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(grep -E '^spreading_factor *=' $f | awk '{print $3}')")" modem.conf
+  set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(grep -E '^bandwidth_hz *=' $f | awk '{print $3}')")" modem.conf
+  set_conf sync_word         "$(ask_default "Sync word in hex (0x12 = standard)" "$(grep -E '^sync_word *=' $f | awk '{print $3}')")" modem.conf
+  set_conf preamble_length   "$(ask_default "Preamble length (32 = standard)" "$(grep -E '^preamble_length *=' $f | awk '{print $3}')")" modem.conf
+  echo
+  echo "Radio settings saved to modem.conf."
+}
+
+# show the modem password once and WAIT until the user confirms saved
+password_gate() {
+  echo
+  echo "==================================================================="
+  echo "  MODEM PASSWORD - shown this one time only"
+  echo
+  echo "  $1"
+  echo
+  echo "  Save it in your password manager NOW. It is stored on this"
+  echo "  machine in secrets/modem.token and never shown again."
+  echo "==================================================================="
+  while true; do
+    read -rp "Type saved and press Enter to continue: " a
+    [[ "${a,,}" == saved ]] && break
+    echo "please type: saved"
+  done
+}
+
 do_install() {
   need_root install
   echo "== meshtech-node install =="
+  echo "This installs the program, asks you a few questions, and can"
+  echo "start the service at the end. Nothing is put on the air by this"
+  echo "install: transmit stays off."
+  echo
   test -d "$VENV" || python3 -m venv "$VENV"
+  echo "- installing python dependencies (this can take a few minutes)..."
   "$VENV/bin/pip" install --quiet --upgrade pip
   "$VENV/bin/pip" install --quiet -e . aiohttp pycryptodome
   "$PY" -c "import spidev" 2>/dev/null \
@@ -112,37 +160,60 @@ do_install() {
   "$PY" -c "import gpiod" 2>/dev/null \
     || "$VENV/bin/pip" install --quiet gpiod \
     || echo "WARNING: gpiod unavailable - radio will not start"
-  mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
-  if [[ -f "$SECRETS/modem.token" ]]; then
-    echo "secrets/modem.token already exists - keeping it"
-  else
-    do_passwords quiet
-  fi
   cp -n deploy/config.json config.json 2>/dev/null || true
   cp -n deploy/modem.conf  modem.conf  2>/dev/null || true
+  # password: generate once, show once, gate on confirmation
+  if [[ -f "$SECRETS/modem.token" ]]; then
+    echo "- modem password already exists (secrets/modem.token) - keeping it"
+  else
+    mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+    local TOKEN
+    TOKEN=$("$PY" -c "import secrets; print(secrets.token_urlsafe(24))")
+    umask 077; printf '%s\n' "$TOKEN" > "$SECRETS/modem.token"
+    chmod 600 "$SECRETS/modem.token"
+    password_gate "$TOKEN"
+  fi
+  # guided configuration (self-contained)
+  guided_radio_questions
+  # systemd registration
   cp deploy/meshtech-node.service /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable "$SERVICE" >/dev/null
-  msg "Install complete" "Next:\n  1. sudo ./manage.sh configure  (radio settings - VERIFY against the old repeater config)\n  2. sudo ./manage.sh verify      (key fingerprint check)\n  3. sudo ./manage.sh start"
+  echo "- service registered (starts on boot when you start it)"
+  # key check, in context
+  echo
+  echo "-- Channel key check ----------------------------------------------"
+  do_verify
+  echo "Compare the channel hash with the one your handheld radio shows"
+  echo "for its #scope channel. They must match or the radios will not"
+  echo "understand each other."
+  echo
+  # start now? one question, real words
+  if yesno "Start the meshtech-node service now"; then
+    systemctl start "$SERVICE"
+    sleep 2
+    systemctl --no-pager --lines 10 status "$SERVICE" || true
+    echo
+    echo "Watch it live any time with:  sudo ./manage.sh logs"
+  else
+    echo "Not started. When you are ready:  sudo ./manage.sh start"
+  fi
+  echo
+  echo "Install complete."
 }
 
 do_passwords() {
   need_root passwords
-  local mode="${1:-menu}"
   mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
   local TOKEN
   TOKEN=$("$PY" -c "import secrets; print(secrets.token_urlsafe(24))")
   umask 077; printf '%s\n' "$TOKEN" > "$SECRETS/modem.token"
   chmod 600 "$SECRETS/modem.token"
-  if [[ $mode == quiet ]]; then
-    echo "====================================================="
-    echo "Modem token (generated once, stored mode-600):"
-    echo "  $TOKEN"
-    echo "Save this where you keep passwords. It is NOT in git."
-    echo "====================================================="
-  else
-    msg "Password rotated" "New modem token generated and stored in\n$SECRETS/modem.token (mode 600):\n\n$TOKEN\n\nSave it now - it is NOT in git.\nRestart the service to apply: sudo ./manage.sh restart"
-  fi
+  echo "New modem password generated (secrets/modem.token, mode 600)."
+  password_gate "$TOKEN"
+  echo
+  echo "If the service is running, restart it to use the new password:"
+  echo "  sudo ./manage.sh restart"
 }
 
 do_configure() {
@@ -181,24 +252,20 @@ do_configure() {
 
 do_verify() {
   require_installed
-  echo "== key fingerprint (what the node derives) =="
+  echo "== channel key check (what this machine derives) =="
   PYTHONPATH=src:"$PWD" "$PY" - <<'PYEOF'
 from meshtech_node.packets import derive_channel_keys
 name = "#scope"
 ch, aes, hmac_key = derive_channel_keys(name)
 print(f"channel      : {name} (hashtag rule: sha256('{name}')[:16])")
-print(f"channel hash : 0x{ch:02x}   <- desk radio must show the same")
+print(f"channel hash : 0x{ch:02x}   <- your handheld must show the same")
 print(f"aes key      : {aes.hex()}")
 print(f"hmac key     : {hmac_key.hex()}")
 PYEOF
   echo
-  echo "== radio parameters (from modem.conf) =="
-  grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length|tx_power_dbm)" modem.conf \
+  echo "== radio settings in use (modem.conf) =="
+  grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length)" modem.conf \
     || echo "modem.conf not found - run sudo ./manage.sh install first"
-  echo
-  echo "Compare: desk radio's #scope channel in the meshcore app"
-  echo "(secret must MATCH #scope) and the old repeater's"
-  echo "/etc/openhop_repeater/config.yaml radio block."
 }
 
 do_uninstall() {

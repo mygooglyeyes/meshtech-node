@@ -23,39 +23,37 @@ accepted stand-down). Abort at any time = one command (bottom).
      `scp -r C:\\projects\\meshtech-node USER@hilltop:~` from Windows,
      then `cd ~/meshtech-node` - same result)
 
-## PHASE 1 - ONE-TIME SETUP
+## PHASE 1 - ONE-TIME SETUP (guided, self-contained)
 
 1.1  Run the manager (needs sudo for systemd + secrets):
 
     sudo ./manage.sh install
 
-    It does, in order: venv + dependencies -> generates the modem
-    token under secrets/ (mode 600, printed ONCE - save it) -> writes
-    config.json + modem.conf from the committed templates -> installs
-    and enables the single systemd unit.
+    The installer walks you through everything in plain text, one
+    question at a time. It: installs the python dependencies ->
+    generates the modem password and shows it ONCE (it waits until
+    you type "saved") -> asks the radio settings (US 915 MHz band
+    defaults; Enter accepts each) -> registers the systemd service ->
+    runs the channel key check -> asks "Start the service now?".
+    Nothing is read from any other software on the box: the install
+    is fully self-contained. Transmit stays OFF.
 
-1.2  VERIFY THE RADIO SETTINGS (never assume defaults are current):
-     compare modem.conf's radio block line by line against the OLD
-     repeater's settings:
+    To change settings later: sudo ./manage.sh configure
 
-    grep -A9 "^radio:" /etc/openhop_repeater/config.yaml
-    grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length|tx_power_dbm)" modem.conf
-
-     Every value must match (watch units: openhop lists bandwidth in
-     kHz - cleanmodem in Hz; 250 kHz = 250000). Fix modem.conf if any
-     differ.
-
-1.3  VERIFY THE KEY (your explicit ask): confirm the #scope secret the
-     node derives matches what your radios hold:
+1.2  VERIFY THE KEY: the installer runs this for you, but any time:
 
     ./manage.sh verify
 
      Expected: channel hash 0x39 for #scope (the hashtag rule
      sha256('#scope')[:16]), aes key 2373636f706500000000000000000000.
-     Cross-check on the desk radio: the scope app's log line
+     Cross-check on the handheld: the scope app's log line
      "#scope found in radio slot 5 - secret MATCHES #scope" is the
-     radio-side proof. All three (node / committed code / radio) must
-     agree before starting.
+     radio-side proof. The node and the radios must agree.
+
+     (HILLTOP MIGRATION NOTE, our own step, not the installer's: the
+     box's previous openhop repeater ran 910.525 MHz / SF7 / 250 kHz /
+     sync 0x12 / preamble 32 - the shipped defaults match it; the
+     installer asks each value so a different box can differ.)
 
 ## PHASE 2 - THE HANDOVER (the one irreversible moment)
 
