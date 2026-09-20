@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e1116" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <title>MeshTech Scope</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+</head>
+<body>
+  <header>
+    <h1>MeshTech Scope</h1>
+    <select id="source-mode" aria-label="Packet source">
+      <option value="radio">Radio (BLE companion)</option>
+      <option value="direct">Direct (meshtech-node)</option>
+    </select>
+    <span id="conn-state" data-state="disconnected">disconnected</span>
+    <button id="connect" class="primary">Connect</button>
+  </header>
+  <main>
+    <div class="inputrow">
+      <input id="radio-name" placeholder="Radio name (optional, e.g. T-Beam)" />
+      <button id="refresh-map">Request map refresh</button>
+    </div>
+    <div id="app-inner"></div>
+    <div class="card">
+      <h3>Event log</h3>
+      <div id="log"></div>
+    </div>
+  </main>
+  <link rel="stylesheet" href="./app.css" />
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

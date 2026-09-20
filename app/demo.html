@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e1116" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <title>MeshTech Scope - DEMO</title>
+  <link rel="stylesheet" href="./demo.css" />
+</head>
+<body>
+  <header>
+    <h1>MeshTech Scope <span style="color:#ffb454;font-size:12px">DEMO</span></h1>
+    <span id="conn-state" data-state="synthetic">synthetic data - no radio</span>
+  </header>
+  <main>
+    <div id="app-inner"></div>
+    <div class="card">
+      <h3>Event log</h3>
+      <div id="log"></div>
+    </div>
+  </main>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>
