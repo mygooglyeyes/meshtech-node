@@ -128,8 +128,8 @@ guided_radio_questions() {
   set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(grep -E '^frequency_hz *=' $f | awk '{print $3}')")" "$f"
   set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(grep -E '^spreading_factor *=' $f | awk '{print $3}')")" "$f"
   set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(grep -E '^bandwidth_hz *=' $f | awk '{print $3}')")" "$f"
-  set_conf sync_word         "$(ask_default "Sync word in hex (0x12 = standard)" "$(grep -E '^sync_word *=' $f | awk '{print $3}')")" "$f"
-  set_conf preamble_length   "$(ask_default "Preamble length (32 = standard)" "$(grep -E '^preamble_length *=' $f | awk '{print $3}')")" "$f"
+  # sync_word (0x12) and preamble (32) are NOT asked: they are fixed
+  # mesh standards here and stay at their shipped values.
   echo
   echo "-- Radio board (the hardware the radio chip sits on) ----------------"
   echo "The pin wiring differs per board. Enter accepts the standard one."
@@ -148,6 +148,28 @@ guided_radio_questions() {
   set_conf pin_profile "$prof" "$f"
   echo
   echo "Radio settings saved to $f."
+}
+
+# guided_web_question - the port the web app is served on. The one
+# chance to pick it at install; Enter keeps the current value (8710
+# on a first install). Re-runs default to what was chosen before.
+guided_web_question() {
+  local cj="$APPDIR/config.json"
+  local cur port
+  cur="$(grep -oE '"port": *[0-9]+' "$cj" | grep -oE '[0-9]+' | head -1)"
+  while true; do
+    read -rp "Web app port (the browser page; Enter = $cur): " port
+    port="${port:-$cur}"
+    case "$port" in
+      ''|*[!0-9]*) echo "please type a number (1-65535)"; continue ;;
+    esac
+    if (( port < 1 || port > 65535 )); then
+      echo "please type a number (1-65535)"; continue
+    fi
+    break
+  done
+  sed -i "s|\"port\": *[0-9]*|\"port\": $port|" "$cj"
+  echo "Web app will be served on port $port."
 }
 
 # sync_to_appdir - copy the program source into $APPDIR (the run home).
@@ -194,6 +216,7 @@ do_install() {
   [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
+  guided_web_question
   sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
   sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
   echo "- writing the service file (runs from $APPDIR)"

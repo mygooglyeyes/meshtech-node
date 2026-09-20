@@ -1,4 +1,4 @@
-"""Companion client - the plugin's radio link.
+"""Companion client - the plugin's radio link (DORMANT in the node).
 
 Connects to the repeater's companion frame server over TCP using the
 official ``meshcore`` library (same as the answerbot), supervises the
@@ -10,6 +10,14 @@ connection, and adds the two scope-specific commands:
   built from overhearing LAYOUTs, which costs zero airtime)
 
 The companion holds the keys; the plugin never does.
+
+NODE STATUS (2026-09-20): the node's RadioSender (Adapter B) replaced
+this class for transport, and the node never constructs it - it is
+kept only as the proven wire-frame reference (its static helpers and
+the module-level scope_secret/scope_wire_body ARE used). The meshcore
+library is imported lazily INSIDE the class, so the node (which never
+runs this class) has no dependency on it - a missing library raises a
+clear error naming this class, and never breaks the node's startup.
 """
 from __future__ import annotations
 
@@ -19,8 +27,6 @@ import logging
 import struct
 import time
 from typing import Awaitable, Callable, Optional
-
-from meshcore import EventType, MeshCore
 
 from . import codec
 from .config import Settings
@@ -69,12 +75,29 @@ def scope_wire_body(data_type: int, payload: bytes) -> bytes:
     return payload[3:]
 
 
+def _meshcore():
+    """The meshcore library, imported ONLY when the dormant
+    companion-radio client below actually runs. The node never calls
+    this: a missing library raises a clear, named error instead of
+    killing the whole program at import time (the 2026-09-20 lesson).
+    """
+    try:
+        from meshcore import EventType, MeshCore
+    except ImportError as exc:
+        raise RuntimeError(
+            "CompanionClient needs the 'meshcore' library "
+            "(pip install meshcore). The node itself never uses this "
+            "class - this error means something started the dormant "
+            "companion-radio path.") from exc
+    return EventType, MeshCore
+
+
 class CompanionClient:
     def __init__(self, settings: Settings,
                  on_packet: Optional[Callable[[object, str],
                                               Awaitable[None]]] = None):
         self.settings = settings
-        self.mc: Optional[MeshCore] = None
+        self.mc: Optional[object] = None  # meshcore instance, on connect
         self.is_connected = False
         self._on_packet = on_packet
         self._slot: Optional[int] = None
@@ -102,6 +125,7 @@ class CompanionClient:
             delay = min(delay * 2, 60.0)
 
     async def _connect_and_serve(self) -> None:
+        EventType, MeshCore = _meshcore()
         log.info("Connecting to %s:%s ...", self.settings.companion_host,
                  self.settings.companion_port)
         mc = await MeshCore.create_tcp(self.settings.companion_host,
@@ -165,6 +189,7 @@ class CompanionClient:
 
     async def _ensure_scope_channel(self) -> None:
         """Find or create the scope channel in a companion slot."""
+        EventType, _ = _meshcore()
         cfg = self.settings.channel
         wanted = cfg.name.lstrip("#").casefold()
         slot_info: dict = {}
@@ -202,8 +227,9 @@ class CompanionClient:
             log.info("Scope channel %s set in companion slot %d",
                      cfg.name, free)
 
-    async def _try(self, what: str, command_fn, quiet: bool = False,
+    async    def _try(self, what: str, command_fn, quiet: bool = False,
                    ack_expected: bool = True) -> bool:
+        EventType, _ = _meshcore()
         try:
             result = await command_fn()
             if result is not None and getattr(result, "type", None) == EventType.ERROR:
@@ -283,6 +309,7 @@ class CompanionClient:
             log.debug("TX dropped: not connected / no slot (type %04x)",
                       data_type)
             return False
+        EventType, _ = _meshcore()
         try:
             body = scope_wire_body(data_type, payload)
         except ValueError as exc:
@@ -324,6 +351,7 @@ class CompanionClient:
     # ------------------------------------------------------------------ RX
 
     def _subscribe(self) -> None:
+        EventType, _ = _meshcore()
         mc = self.mc
         self._subs = []
         for event_type in (EventType.CHANNEL_DATA_RECV,):
