@@ -47,11 +47,19 @@ menu() {
   else
     local i=1 tags=() labels=()
     while [[ $# -ge 2 ]]; do tags+=("$1"); labels+=("$2"); shift 2; done
+    # listing goes to stderr: $() captures ONLY the chosen tag
     for i in "${!tags[@]}"; do
-      printf "  %2d) %-12s %s\n" $((i+1)) "${tags[$i]}" "${labels[$i]}"
+      printf "  %2d) %-12s %s\n" $((i+1)) "${tags[$i]}" "${labels[$i]}" >&2
     done
-    read -rp "# " n
-    echo "${tags[$((n-1))]}"
+    # accept a number, or the word quit/q; anything else re-asks
+    while true; do
+      read -rp "number (or quit): " n
+      [[ "${n,,}" == q || "${n,,}" == quit ]] && { echo "quit"; return; }
+      if [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#tags[@]} )); then
+        echo "${tags[$((n-1))]}"; return
+      fi
+      echo "please type a number from 1 to ${#tags[@]}, or quit" >&2
+    done
   fi
 }
 
@@ -304,7 +312,8 @@ do_menu() {
       "status"     "is it running + recent log" \
       "logs"       "follow the live log" \
       "bench"      "run without the radio (foreground, TX impossible)" \
-      "uninstall"  "remove the service (and optionally the files)")
+      "uninstall"  "remove the service (and optionally the files)" \
+      "quit"       "leave the manager")
     case "$pick" in
       install)   do_install ;;
       configure) do_configure ;;
@@ -317,6 +326,7 @@ do_menu() {
       logs)      journalctl -u "$SERVICE" -f --no-pager; pause ;;
       bench)     test -f config.json || cp deploy/config.json config.json; PYTHONPATH=src:"$PWD" "$PY" -m meshtech_node --config config.json --bench-no-radio; pause ;;
       uninstall) do_uninstall; return ;;
+      quit)      echo "bye"; return ;;
     esac
   done
 }
