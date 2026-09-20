@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Secrets - NEVER commit (rule zero)
+*.token
+*.token.*
+token*
+*token*.txt
+modem.token*
+
+# Local configs with machine-specific values (templates ship in deploy/)
+config.json
+!deploy/config.json     <- exception: the deploy TEMPLATE is committed
+config.*.local.json
+
+# Logs and run artifacts
+*.log
+*.log.*
+bench-*.log
+data/
+*.db
+
+# Deploy bundles (built artifacts, reproducible via deploy/make-package.sh)
+meshtech-node-deploy-*.tar.gz
+
+# OS cruft
+Thumbs.db
+.DS_Store

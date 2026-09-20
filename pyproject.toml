@@ -1,0 +1,8 @@
+[project]
+name = "meshtech-node"
+version = "0.0.1"
+description = "Standalone listener + scope feed for the PiMesh radio (meshtech-node, PLAN.md)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

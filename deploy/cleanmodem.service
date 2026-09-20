@@ -1,0 +1,14 @@
+[Unit]
+Description=cleanmodem - LoRa modem server (owns the PiMesh 1W v2 radio)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/meshtech-node
+ExecStart=/opt/meshtech-node/.venv/bin/python -m cleanmodem --config /opt/meshtech-node/modem.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

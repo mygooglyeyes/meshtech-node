@@ -1,0 +1,23 @@
+{
+  "channel": { "name": "#scope", "secret_hex": "" },
+  "area": {
+    "name": "Novato bench",
+    "center_lat": 38.1074,
+    "center_lon": -122.5697,
+    "span_km": 40.0,
+    "grid": 3
+  },
+  "feed": {
+    "pulse_interval_seconds": 300,
+    "layout_interval_seconds": 600,
+    "max_packets_per_hour": 60,
+    "refresh_cooldown_seconds": 30,
+    "refresh_hourly_cap": 5
+  },
+  "webserve": {
+    "host": "127.0.0.1",
+    "port": 8710,
+    "token_file": "",
+    "static_dir": "../scope-app/dist"
+  }
+}
