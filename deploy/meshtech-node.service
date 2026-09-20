@@ -1,13 +1,15 @@
 [Unit]
-Description=meshtech-node - listen-only mesh listener + scope feed
-After=network.target cleanmodem.service
-Wants=cleanmodem.service
+Description=meshtech-node - single-process mesh listener + scope feed (owns the radio)
+After=network.target
 
 [Service]
 Type=simple
-# RUNBOOK NOTE: set User= to Brett's box account at deploy time
-# (machine-specific details are never committed).
-User=CHANGE_ME
+# SINGLE SERVICE (Brett 2026-09-20): this one process owns the radio
+# (embedded cleanmodem) AND the feed. Root is required for the radio's
+# SPI/GPIO pins; everything else in the node is unprivileged code.
+# RUNBOOK NOTE: set User= to Brett's box account is NOT needed - root
+# runs the radio; the web app stays loopback-only so exposure is local.
+User=root
 WorkingDirectory=/opt/meshtech-node
 ExecStart=/opt/meshtech-node/.venv/bin/python -m meshtech_node --config /opt/meshtech-node/config.json
 Restart=on-failure

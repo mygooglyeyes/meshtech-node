@@ -142,10 +142,14 @@ class Settings:
     storage: StorageCfg = field(default_factory=StorageCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
     webserve: WebServeCfg = field(default_factory=WebServeCfg)
-    # NODE: cleanmodem link for REAL mode (the radio lives on the box;
-    # SPI/serial to cleanmodem, loopback TCP to us). The node's
-    # companion_host/companion_port reuse: same wire, same defaults.
+    # NODE: SINGLE-PROCESS radio ownership (Brett 2026-09-20 - the
+    # user controls ONE service). When modem_conf names a cleanmodem
+    # modem.conf, the node embeds the radio server in-process (root
+    # on the box) instead of connecting to a standalone cleanmodem.
+    # companion_host/port remain the loopback endpoint it dials -
+    # itself. modem_token_file: the token file for that link.
     modem_token_file: str = ""
+    modem_conf: str = ""
     config_path: str = "config.json"
     warnings: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -346,6 +350,7 @@ def load(config_path: str) -> Settings:
 
     modem_token_file = _text(raw, "modem_token_file", "", errors,
                              "modem_token_file")
+    modem_conf = _text(raw, "modem_conf", "", errors, "modem_conf")
 
     if errors:
         pretty = "\n".join(f"  - {e}" for e in errors)
@@ -363,6 +368,7 @@ def load(config_path: str) -> Settings:
         logging=LoggingCfg(level=log_level),
         webserve=webserve_cfg,
         modem_token_file=modem_token_file,
+        modem_conf=modem_conf,
         config_path=config_path,
         warnings=warnings,
         raw=raw,

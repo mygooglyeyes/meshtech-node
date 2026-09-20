@@ -157,6 +157,17 @@ async def _main(argv: Optional[list] = None) -> int:
     settings = cfgmod.load(args.config)
     bench = args.bench_no_radio
 
+    # SINGLE-PROCESS MODE (Brett 2026-09-20: the user controls ONE
+    # thing): when config names a modem.conf, the node embeds
+    # cleanmodem's radio server in-process (root required on the box),
+    # then connects to its own loopback through the proven client.
+    radio = None
+    modem_conf = getattr(settings, "modem_conf", "")
+    if modem_conf and not bench:
+        from .inprocess import InProcessRadio
+        radio = InProcessRadio(modem_conf)
+        await radio.start()          # raises loudly on radio failure
+
     source, sender, brain, serve = _build(settings, bench_no_radio=bench)
     modem = getattr(sender, "modem", None)
 
@@ -221,6 +232,8 @@ async def _main(argv: Optional[list] = None) -> int:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await runner.cleanup()
+        if radio is not None:
+            await radio.stop()
     return 0
 
 

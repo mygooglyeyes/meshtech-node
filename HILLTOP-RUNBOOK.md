@@ -1,123 +1,128 @@
-# HILLTOP CUTOVER RUNBOOK - meshtech-node takes the radio (LISTEN-ONLY)
+# HILLTOP CUTOVER RUNBOOK - meshtech-node (single service, listen-only)
 
-Written 2026-09-20. One step at a time, every step a single command or
-single decision, Brett's hands on every irreversible moment (the
-Confirmation Rule). Nothing here transmits: the node runs LISTEN-ONLY
-for this whole window. TX stays config-off until a separate, explicit
-later decision.
+Rewritten 2026-09-20 for the SINGLE-PROCESS model (Brett: the user
+controls ONE thing): the node embeds the radio server in-process, so
+there is exactly ONE service - `meshtech-node` - and ONE manager:
+`./manage.sh`. Nothing here transmits: TX stays config-off for this
+whole window (a separate, explicit later decision turns it on).
 
-Success picture at the end: hilltop's PiMesh 1W v2 radio is owned by
-cleanmodem, the node is connected to it listen-only, and your desk
-radio's #scope traffic appears in the scope app over the local web
-feed. The openhop repeater stays STOPPED - that's the accepted
-stand-down.
+Success picture: hilltop's PiMesh 1W v2 radio is owned by the node
+service; your desk radio's #scope traffic appears in the scope app
+over the local web feed; the openhop repeater stays STOPPED (the
+accepted stand-down). Abort at any time = one command (bottom).
 
 ---
 
-## PHASE 0 - PREP (agent machine, before Brett touches hilltop)
+## PHASE 0 - GET THE CODE ONTO THE BOX (one command, your home folder)
 
-0.1  Agent: verify the package builds and the suite is green
-     (`.venv/Scripts/python.exe -m pytest tests/ -q` -> 143 pass +
-     6 skip). DONE 2026-09-20.
+0.1  From your home folder on hilltop:
 
-0.2  Agent: bundle the deploy package (node src + cleanmodem + config
-     template + runbook) into `meshtech-node-deploy-YYYYMMDD.tar.gz`.
-     No secrets inside: the #scope key is the public hashtag rule, and
-     the modem token file is created ON the box by Brett.
+    git clone <repo-url> meshtech-node && cd meshtech-node
 
-0.3  Agent: hand Brett the scp command (one line, copy-button safe).
+    (until the repo has a remote, copy the working folder up instead:
+     `scp -r C:\\projects\\meshtech-node USER@hilltop:~` from Windows,
+     then `cd ~/meshtech-node` - same result)
 
-## PHASE 1 - DEPLOY (Brett's hands, one command per step)
+## PHASE 1 - ONE-TIME SETUP
 
-NOTE: the runbook shows the generic username `USER@hilltop` - it is
-NOT committed as a real hostname/account pair (rule zero: no
-machine-specific details in git). Brett knows his own.
+1.1  Run the manager (needs sudo for systemd + secrets):
 
-1.1  Brett: copy the package up:
-     scp meshtech-node-deploy-*.tar.gz USER@hilltop:/tmp/
+    sudo ./manage.sh setup
 
-1.2  Brett: unpack it:
-     ssh USER@hilltop "sudo mkdir -p /opt/meshtech-node && sudo tar -xzf /tmp/meshtech-node-deploy-*.tar.gz -C /opt/meshtech-node && sudo chown -R USER:USER /opt/meshtech-node"
+    It does, in order: venv + dependencies -> generates the modem
+    token under secrets/ (mode 600, printed ONCE - save it) -> writes
+    config.json + modem.conf from the committed templates -> installs
+    and enables the single systemd unit.
 
-1.3  Brett: create the python venv on the box and install the node:
-     ssh USER@hilltop "cd /opt/meshtech-node && python3 -m venv .venv && .venv/bin/pip install -e . aiohttp pycryptodome pytest"
-     (deps are stdlib+3; no pymc_core needed - vendored crypto,
-     byte-proven identical 2026-09-20)
+1.2  VERIFY THE RADIO SETTINGS (never assume defaults are current):
+     compare modem.conf's radio block line by line against the OLD
+     repeater's settings:
 
-1.4  Brett: create the modem token file (mode 600, never committed):
-     ssh USER@hilltop "umask 077 && printf 'pick-a-password\n' > /opt/meshtech-node/modem.token"
-     then set cleanmodem's config to the SAME password (step 1.6).
+    grep -A9 "^radio:" /etc/openhop_repeater/config.yaml
+    grep -E "^(frequency_hz|spreading_factor|coding_rate|bandwidth_hz|sync_word|preamble_length|tx_power_dbm)" modem.conf
+
+     Every value must match (watch units: openhop lists bandwidth in
+     kHz - cleanmodem in Hz; 250 kHz = 250000). Fix modem.conf if any
+     differ.
+
+1.3  VERIFY THE KEY (your explicit ask): confirm the #scope secret the
+     node derives matches what your radios hold:
+
+    ./manage.sh verify
+
+     Expected: channel hash 0x39 for #scope (the hashtag rule
+     sha256('#scope')[:16]), aes key 2373636f706500000000000000000000.
+     Cross-check on the desk radio: the scope app's log line
+     "#scope found in radio slot 5 - secret MATCHES #scope" is the
+     radio-side proof. All three (node / committed code / radio) must
+     agree before starting.
 
 ## PHASE 2 - THE HANDOVER (the one irreversible moment)
 
-2.1  Brett's call, out loud, in the moment: STOP the openhop repeater.
-     Only when you say so:
-     ssh k6bps@hilltop "sudo systemctl stop openhop-repeater && sudo systemctl disable openhop-repeater"
-     (disable = it will not come back on reboot - the stand-down)
+2.1  Your call, out loud, in the moment. Only when YOU say so:
 
-2.2  VERIFY the radio is now free (no other process holds it):
-     ssh k6bps@hilltop "sudo systemctl stop openhop-repeater 2>/dev/null; sudo fuser -v /dev/spidev0.0 2>&1 | head -3; echo '---'; ps aux | grep -iE 'openhop|repeater' | grep -v grep | head -3"
-     Expected: no processes, no fuser output.
+    sudo systemctl stop openhop-repeater && sudo systemctl disable openhop-repeater
 
-## PHASE 3 - CLEANMODEM TAKES THE RADIO
+     (disable = it will not return on reboot - the stand-down)
 
-3.1  Agent hands over cleanmodem's config (modem.conf on the box):
-     radio settings MUST match the repeater's old block line by line
-     (frequency, SF, BW, sync word, preamble, power) - BENCH-CHECKLIST
-     rule: verify against the box's own /etc/openhop_repeater/config.yaml
-     radio block BEFORE first start, never assume defaults.
+2.2  VERIFY the radio is free (nothing else holds it):
 
-3.2  Brett: install cleanmodem as a boot service and start it:
-     ssh k6bps@hilltop "cd /opt/meshtech-node && sudo cp cleanmodem/cleanmodem.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now cleanmodem"
+    sudo fuser -v /dev/spidev0.0 2>&1 | head -3; ps aux | grep -iE 'openhop|repeater' | grep -v grep | head -3
 
-3.3  VERIFY the modem server is up and the radio answered:
-     ssh k6bps@hilltop "systemctl is-active cleanmodem && journalctl -u cleanmodem -n 12 --no-pager"
-     Expected: 'listening on 127.0.0.1:5055', radio init OK.
+     Expected: no output from either.
 
-## PHASE 4 - NODE, LISTEN-ONLY
+## PHASE 3 - START THE ONE SERVICE
 
-4.1  Brett: write the node's config from the template (agent provides
-     exact content at this step), then start the node service:
-     ssh k6bps@hilltop "cd /opt/meshtech-node && sudo cp meshtech-node.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now meshtech-node"
+3.1  Start it (this boots the radio in-process and then the feed):
 
-4.2  VERIFY the whole chain in one log line set:
-     ssh k6bps@hilltop "journalctl -u meshtech-node -n 20 --no-pager"
-     Expected, in order:
-       'BENCH...' NO - expect: 'RADIO LINK UP - the node is listening
-       (TX off, listen-only)'
-       'crypto: vendored _NodeCrypto in use'
+    sudo ./manage.sh start
+
+3.2  VERIFY the boot checklist:
+
+    ./manage.sh status
+
+     Expected log lines, in order:
+       'embedded radio server UP on 127.0.0.1:5055 (radio parameters:
+       910525000 Hz, SF7, ...)'
+       'RADIO LINK UP - the node is listening (TX off, listen-only)'
+       'crypto: vendored _NodeCrypto in use' (or reference pymc_core)
        'Scope feed running: channel #scope ... budget 60 pkt/h'
-       WebServe listening on 127.0.0.1:8710/feed
+       'WebServe listening on 127.0.0.1:8710/feed'
 
-4.3  VERIFY silence on the air (the honesty check): the node log must
-     show ZERO TX lines, and the desk radio hears nothing new.
-     ssh k6bps@hilltop "journalctl -u meshtech-node --since '-10 min' --no-pager | grep -c 'TX '"
+3.3  VERIFY SILENCE ON THE AIR (the honesty check):
+
+    journalctl -u meshtech-node --since '-10 min' --no-pager | grep -c 'TX '
+
      Expected: 0.
 
-## PHASE 5 - SEE THE REAL MESH
+## PHASE 4 - SEE THE REAL MESH
 
-5.1  Browser on the LAN (or SSH tunnel): open the node's served app.
-     Direct mode is unnecessary here - the app is served BY the node
-     already; just connect. From the Windows machine:
-     ssh -N -L 8710:127.0.0.1:8710 k6bps@hilltop
-     then open http://127.0.0.1:8710/ locally and switch source to
+4.1  From the Windows machine, tunnel the app through:
+
+    ssh -N -L 8710:127.0.0.1:8710 USER@hilltop
+
+     then open http://127.0.0.1:8710/ locally, switch the source to
      Direct, Connect node.
 
-5.2  Brett: key the desk radio, send any #scope traffic (or just let
-     the mesh breathe). Expected: 'active nodes' and 'mesh RX/hour'
-     climb from 0; the log fills with [direct] scope lines; sections
-     light up as the brain ingests.
+4.2  Key the desk radio / let the mesh breathe. Expected: 'active
+     nodes' and 'mesh RX/hour' climb from 0; the log fills with
+     [direct] scope lines; sections light up.
 
-5.3  Agent + Brett: eyeball the numbers against the plugin era
-     (sanity, not precision): tens of nodes, RX/hour in the hundreds -
-     the 37890-style nonsense numbers of 2026-09-18 must NOT return.
+4.3  Sanity-check the numbers against the plugin era (tens of nodes,
+     RX/hour in the hundreds) - the 37890-style nonsense of 2026-09-18
+     must NOT return.
 
-## EXIT / ABORT
+## DAY-TO-DAY (the whole surface)
 
-- ABORT ANY TIME: restart the old world in 2 commands:
-  ssh k6bps@hilltop "sudo systemctl stop meshtech-node cleanmodem && sudo systemctl enable --now openhop-repeater"
-  (the repeater returns exactly as it was; nothing was written to it)
-- TX NEVER HAPPENS in this runbook. A later, separate decision turns
-  tx_enabled on - never during this window.
-- The plugin is now moot on the box; its releases dir stays untouched
-  (rule: never delete Brett's stuff without asking).
+    ./manage.sh start | stop | restart | status | logs | verify
+
+## EXIT / ABORT (back to the old world in one line)
+
+    sudo ./manage.sh stop && sudo systemctl enable --now openhop-repeater
+
+    (the repeater returns exactly as it was; the node wrote nothing)
+
+- The plugin's releases dir on the box stays untouched (rule: never
+  delete Brett's stuff without asking).
+- TX NEVER HAPPENS in this runbook. A later, separate decision flips
+  tx_enabled - never during this window.
