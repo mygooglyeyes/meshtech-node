@@ -28,6 +28,10 @@ APPDIR=/opt/meshtech-node
 # ---------------------------------------------------------------- ui --
 HAVE_WHIP=0
 command -v whiptail >/dev/null 2>&1 && HAVE_WHIP=1
+# MENU_PROMPT: the line a menu shows above its options. The datadoor
+# screen sets it to the door state + current password (Brett 2026-09-21:
+# state and password ALWAYS visible at the top, never a text dump).
+MENU_PROMPT="Choose:"
 
 # msg <title> <text>            (info box / plain echo)
 msg() {
@@ -43,12 +47,13 @@ msg() {
 menu() {
   local title="$1"; shift
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    whiptail --title "$title" --menu "Choose:" 24 78 16 "$@" \
+    whiptail --title "$title" --menu "${MENU_PROMPT:-Choose:}" 24 78 16 "$@" \
       3>&1 1>&2 2>&3
   else
     local i=1 tags=() labels=()
     while [[ $# -ge 2 ]]; do tags+=("$1"); labels+=("$2"); shift 2; done
     # listing goes to stderr: $() captures ONLY the chosen tag
+    echo "${MENU_PROMPT:-Choose:}" >&2
     for i in "${!tags[@]}"; do
       printf "  %2d) %-12s %s\n" $((i+1)) "${tags[$i]}" "${labels[$i]}" >&2
     done
@@ -303,7 +308,7 @@ do_configure() {
       "txmode"     "radio TRANSMIT on/off      (cur: $(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')) - RESTARTS the service" \
       "companions" "let other devices LISTEN to this radio (PC/phone simulator)" \
       "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
-      "datadoor"   "feed DATA door - $( [[ -f "$APPDIR/secrets/webserve.token" ]] && echo OPEN || echo CLOSED ) / show password" \
+      "datadoor"   "Data Door" \
       "back"       "save nothing and go back")
     case "$pick" in
       frequency) set_conf frequency_hz "$(inputbox "frequency_hz" "$cur")" "$MC" ;;
@@ -317,66 +322,48 @@ do_configure() {
         port=$(inputbox "web app port" "$(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+')")
         sed -i "s|\"port\": [0-9]*,|\"port\": ${port},|" "$CJ" ;;
       datadoor)
-        # DATA DOOR (SELF-CONTAINED RULE, Brett 2026-09-21): display
-        # devices (the PC/phone app) take FEED DATA over the network;
-        # pages never leave this box. Flow per Brett 2026-09-21: the
-        # state is visible up front, the action matches the state, and
-        # the CURRENT password is always viewable - nothing drops to a
-        # bare prompt, the pause prompt is always the last line.
+        # DATA DOOR SCREEN (Brett's flow, 2026-09-21). One screen, three
+        # actions, never leaves the menu system: the header carries the
+        # door state + current password, the actions work in the
+        # background, and the screen re-renders with the new state.
+        #   1) Open door - generate a new password (a re-key if open)
+        #   2) Close door
+        #   3) Return to menu
         local WT="$APPDIR/secrets/webserve.token"
-        local door_state="CLOSED"
-        [[ -f "$WT" ]] && door_state="OPEN"
-        echo
-        echo "DATA DOOR state: $door_state"
-        if [[ "$door_state" == "OPEN" ]]; then
-          # Open: show the connection facts + password, offer to close.
-          local lanip
-          lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
-          echo
-          echo "On the display device (PC app, Direct mode):"
-          echo "  - Host node address: ${lanip:-<this box IP>}"
-          echo "  - Password: $(cat "$WT")"
-          echo
-          if yesno "CLOSE the data door (password revoked, loopback-only, restart)"; then
-            need_root datadoor
-            rm -f "$WT"
-            sed -i 's|"host": "[^"]*"|"host": "127.0.0.1"|' "$CJ"
-            systemctl restart "$SERVICE"
-            sleep 2
-            echo "Data door CLOSED - the feed answers this box only."
-          else
-            echo "Door left open."
+        while true; do
+          local door_state="CLOSED" shown_pw="(door closed - no password)"
+          if [[ -f "$WT" ]]; then
+            door_state="OPEN"
+            shown_pw="$(cat "$WT")"
           fi
-        else
-          # Closed: the only action is create-a-password-and-open.
-          echo "Opening the DATA DOOR: display devices on your network may"
-          echo "take the feed (password required, TX unchanged). Pages never"
-          echo "leave this box - data only."
-          if yesno "Generate a new password and OPEN the door"; then
-            need_root datadoor
-            umask 077
-            python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$WT"
-            chmod 600 "$WT"
-            umask 022
-            sed -i 's|"host": "[^"]*"|"host": "0.0.0.0"|' "$CJ"
-            sed -i "s|\"token_file\": *\"[^\"]*\"|\"token_file\": \"$APPDIR/secrets/webserve.token\"|" "$CJ"
-            systemctl restart "$SERVICE"
-            sleep 2
-            local lanip
-            lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
-            echo
-            echo "DATA-DOOR PASSWORD (visible any time under datadoor):"
-            cat "$WT"
-            echo
-            echo "On the display device (PC app, Direct mode):"
-            echo "  - Host node address: ${lanip:-<this box IP>}"
-            echo "  - Password: paste the one above (asked once, remembered)"
-          else
-            echo "Door left closed."
-          fi
-        fi
-        echo
-        pause
+          MENU_PROMPT="Door: $door_state
+Password: $shown_pw"
+          local act
+          act=$(menu "Data Door" \
+            "open"   "Open door - generate a new password" \
+            "close"  "Close door - revoke the password" \
+            "back"   "Return to menu")
+          case "$act" in
+            open)
+              need_root datadoor
+              umask 077
+              python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$WT"
+              chmod 600 "$WT"
+              umask 022
+              sed -i 's|"host": "[^"]*"|"host": "0.0.0.0"|' "$CJ"
+              sed -i "s|\"token_file\": *\"[^\"]*\"|\"token_file\": \"$APPDIR/secrets/webserve.token\"|" "$CJ"
+              systemctl restart "$SERVICE"
+              ;;
+            close)
+              need_root datadoor
+              rm -f "$WT"
+              sed -i 's|"host": "[^"]*"|"host": "127.0.0.1"|' "$CJ"
+              systemctl restart "$SERVICE"
+              ;;
+            back) break ;;
+          esac
+        done
+        MENU_PROMPT="Choose:"
         ;;
       txmode)
         local cur_tx new_tx
