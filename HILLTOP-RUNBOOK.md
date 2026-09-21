@@ -153,6 +153,14 @@ byte moved from 0x02 to 0x03 at the same time; packets from either
 era are decode-able but the numbering convention differs - compare
 old and new logs with that in mind.
 
+## DATA DOOR for display devices (SELF-CONTAINED RULE, 2026-09-21)
+
+The PC/phone app runs from ITS OWN device and takes FEED DATA over
+the network; pages never leave this box. configure -> datadoor:
+creates the one-time data-door password, binds the feed to the LAN,
+and prints the address + password for the device. Closing the door
+revokes the password and goes loopback-only. TX is unchanged by this.
+
 ## COMPANION DEVICES (the phone-app simulation, 2026-09-20)
 
 Another machine (your PC, later a phone) can run this SAME program as

@@ -34,6 +34,7 @@ from .observations import Observation
 from .packets import (ChannelKeys, FloodDedupe, FrameParts,
                       PAYLOAD_TYPE_ADVERT, PAYLOAD_TYPE_GRP_DATA,
                       PAYLOAD_TYPE_GRP_TXT, parse_advert, split_frame)
+from .repeaters import RepeaterTable
 
 log = logging.getLogger("meshtech-node.rawsource")
 
@@ -96,6 +97,10 @@ class RawPacketSource:
     # app's own decoder could read (no silent gaps).
     on_heard: Optional[Callable[[int, bytes, RxPacket], None]] = None
     stats: SourceStats = field(default_factory=SourceStats)
+    # UNIDENTIFIED-REPEATER TRACKER (Brett 2026-09-21): every path tag
+    # in every heard packet is counted - emergency nodes that repeat
+    # traffic are accountable even before their adverts arrive.
+    repeaters: RepeaterTable = field(default_factory=RepeaterTable)
     # FULL header of the last scope packet heard - the bench proof that
     # nothing was stripped (BENCH-CHECKLIST full-header check).
     last_scope_frame: Optional[FrameParts] = None
@@ -134,15 +139,29 @@ class RawPacketSource:
 
     def handle_packet(self, rx: RxPacket) -> Optional[Observation]:
         """Parse+decode one heard packet; returns the Observation for
-        the ingest queue, or None (counted honestly). Scope packets are
-        ALSO offered to the on_scope callback (fire-and-forget; a
-        failing callback is logged, never fatal)."""
+        the ingest queue, or None (counted honestly - malformed frames
+        and flood duplicates only).
+
+        PROJECT.md rule 3 (Brett 2026-09-21): header facts are taken
+        from EVERY packet - path, hops, signal, timing - whatever the
+        channel and whatever the payload type. Only the PAYLOAD needs
+        keys; the header is public structure, and it is the map's raw
+        material. Scope packets are ALSO offered to the on_scope
+        callback (fire-and-forget; a failing callback is logged, never
+        fatal)."""
         self.stats.received += 1
         frame = split_frame(rx.data)
         if frame is None:
             self.stats.malformed += 1
             log.debug("Malformed frame (%dB) skipped", len(rx.data))
             return None
+
+        # PROJECT.md rule 3, accountability layer: every repeater tag
+        # in the path is counted, whatever the packet type or channel.
+        # (Deduped frames still count - a tag carrying the same packet
+        # twice really did relay twice within the dedupe window.)
+        for tag in self._path_tags(frame):
+            self.repeaters.observe_tag(tag, now=rx.recv_ts)
 
         if frame.payload_type == PAYLOAD_TYPE_ADVERT:
             return self._from_advert(rx, frame)
@@ -153,10 +172,35 @@ class RawPacketSource:
                 return None
             return self._from_group(rx, frame)
 
-        # DMs, room-server traffic etc: counted, not consumed. The node
-        # is a scope feed, not a chat bot - the answerbot stays separate.
+        # DMs, room-server traffic etc: the PAYLOAD stays unread (the
+        # node is a scope feed, not a chat bot) but the HEADER becomes
+        # an observation - route structure rides on every frame.
         self.stats.ignored_type += 1
-        return None
+        return self._header_observation(rx, frame)
+
+    @staticmethod
+    def _header_observation(rx: RxPacket,
+                            frame: FrameParts) -> Observation:
+        """Header-only Observation from an unreadable packet.
+
+        Honest fields: no sender identity (prefix=0 - the wire carries
+        none for group traffic), no position, no name. What it DOES
+        carry is the map's structure: the repeater path, and the
+        signal/timing facts from the radio. The store consumes the
+        path (routes) and the timing (rx/hour); the phantom-node
+        guards (prefix=0 skipped in the active counts) keep the
+        unknown sender out of the node tables."""
+        return Observation(
+            recv_ts=rx.recv_ts or time.time(),
+            origin_ts=None,           # payload unread: no honest stamp
+            prefix=0,
+            lat=None,
+            lon=None,
+            path_prefixes=RawPacketSource._path_prefixes(frame),
+            channel_name=None,
+            node_class=0,
+            node_name=None,
+        )
 
     def _emit_scope(self, decoded: Optional[Tuple[ChannelKeys, bytes, float]],
                     frame: FrameParts, rx: RxPacket) -> None:
@@ -218,6 +262,7 @@ class RawPacketSource:
             self.stats.duplicates += 1
             return None
         self.stats.decoded += 1
+        self._offer_advert_promotion(info)
         return Observation(
             recv_ts=rx.recv_ts or time.time(),
             origin_ts=info.origin_ts,
@@ -233,10 +278,13 @@ class RawPacketSource:
     def _from_group(self, rx: RxPacket, frame: FrameParts) -> Optional[Observation]:
         decoded = packets.decode_group_payload(frame.payload, self.channels)
         if decoded is None:
-            # foreign channel, bad MAC, or crypto unavailable - honest
-            # either way; never a fabricated plaintext
+            # foreign channel, bad MAC, or crypto unavailable - the
+            # PAYLOAD is honestly unreadable (never fabricated), but
+            # PROJECT.md rule 3: the header still becomes an
+            # observation. Foreign-channel packets are the majority of
+            # mesh traffic and carry most of the route structure.
             self.stats.undecodable += 1
-            return None
+            return self._header_observation(rx, frame)
         channel, _plaintext, origin_ts = decoded
         self.stats.decoded += 1
         if frame.payload_type == PAYLOAD_TYPE_GRP_DATA:
@@ -252,6 +300,36 @@ class RawPacketSource:
             node_class=0,
             node_name=None,
         )
+
+    @staticmethod
+    def _path_tags(frame: FrameParts) -> list:
+        """Path bytes AS TAGS (bytes, not ints) - the repeater table's
+        identity keys. A tag is the first hash_size bytes of the
+        repeater's pubkey (reference truth), so advert pubkeys match
+        exactly. Own transmissions are excluded: a node carrying its
+        own packet is our TX echo, not a foreign relay."""
+        if frame.hops == 0 or frame.hash_size == 0:
+            return []
+        return [frame.path[i:i + frame.hash_size]
+                for i in range(0, len(frame.path), frame.hash_size)]
+
+    def _offer_advert_promotion(self, info) -> None:
+        """Offer one parsed advert's pubkey to the repeater table -
+        promotes any matching unknown tag to a named node."""
+        if info.pubkey is None:
+            return
+        try:
+            promoted = self.repeaters.observe_advert(
+                info.pubkey, info.name, info.node_class,
+                now=time.time())
+        except Exception:
+            log.exception("advert promotion raised - listener continues")
+            return
+        for entry in promoted:
+            log.info("Repeater IDENTIFIED: tag %s -> %s (%d relays "
+                     "before its advert arrived)",
+                     entry.tag.hex(), entry.name or f"{entry.prefix:02x}",
+                     entry.relay_count)
 
     @staticmethod
     def _path_prefixes(frame: FrameParts) -> list:

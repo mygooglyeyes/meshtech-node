@@ -115,15 +115,54 @@ def test_malformed_counted_not_crashed():
 def test_foreign_channel_undecodable_honest():
     src = _source([])
     data = _frame(0x06, 0, bytes([0xAA]) + GOLDEN_MAC + GOLDEN_CT)
-    assert src.handle_packet(RxPacket(data=data)) is None
+    obs = src.handle_packet(RxPacket(data=data))
+    # PROJECT.md rule 3: payload honestly unreadable, but the header
+    # is recorded - an observation WITH the (empty, path_len 0) header
+    # facts comes back, not None.
+    assert obs is not None
+    assert obs.prefix == 0            # sender honestly unknown
+    assert obs.lat is None and obs.lon is None
+    assert obs.channel_name is None
     assert src.stats.undecodable == 1
     assert src.stats.decoded == 0
 
 
 def test_ignored_types_counted():
     src = _source([])
-    assert src.handle_packet(RxPacket(data=_frame(0x02, 2, b"\x01\x02"))) is None
+    obs = src.handle_packet(RxPacket(data=_frame(0x02, 2, b"\x01\x02")))
+    # PROJECT.md rule 3: DMs/room traffic keep their payload unread
+    # (not a chat bot) but the header becomes an observation.
+    assert obs is not None
+    assert obs.prefix == 0
+    assert obs.lat is None and obs.lon is None
     assert src.stats.ignored_type == 1
+
+
+def test_ignored_type_header_path_recorded():
+    # A DM routed through two repeaters: path_len byte encodes hash
+    # size 1 (top bits 00) and count 2 -> path = 2 x 1-byte hashes.
+    # _frame() writes path_len 0; build this one by hand: header,
+    # path_len(2), the two hashes, then the payload.
+    src = _source([])
+    header = bytes([(0x02 << 2) | 0x02])     # version 0, type 0x02, route 2
+    data = header + bytes([0x02, 0xAB, 0xCD]) + b"\x01\x02"
+    obs = src.handle_packet(RxPacket(data=data))
+    assert obs is not None
+    assert obs.path_prefixes == [0xAB, 0xCD]   # the route trail survives
+    assert obs.prefix == 0
+
+
+def test_foreign_channel_header_path_recorded():
+    # Same for foreign-channel group traffic: undecodable payload,
+    # recorded route trail.
+    src = _source([])
+    payload = bytes([0xAA]) + GOLDEN_MAC + GOLDEN_CT
+    header = bytes([(0x06 << 2) | 0x02])
+    data = header + bytes([0x02, 0x11, 0x22]) + payload
+    obs = src.handle_packet(RxPacket(data=data))
+    assert obs is not None
+    assert src.stats.undecodable == 1
+    assert obs.path_prefixes == [0x11, 0x22]
 
 
 # -------------------------------------------------------------- async ----

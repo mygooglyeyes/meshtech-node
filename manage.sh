@@ -282,6 +282,7 @@ do_configure() {
       "txmode"     "radio TRANSMIT on/off      (cur: $(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')) - RESTARTS the service" \
       "companions" "let other devices LISTEN to this radio (PC/phone simulator)" \
       "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
+      "datadoor"   "feed DATA door for devices (PC/phone app) - open/close" \
       "back"       "save nothing and go back")
     case "$pick" in
       frequency) set_conf frequency_hz "$(inputbox "frequency_hz" "$cur")" "$MC" ;;
@@ -294,6 +295,51 @@ do_configure() {
         local port
         port=$(inputbox "web app port" "$(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+')")
         sed -i "s|\"port\": [0-9]*,|\"port\": ${port},|" "$CJ" ;;
+      datadoor)
+        # DATA DOOR (SELF-CONTAINED RULE, Brett 2026-09-21): display
+        # devices (the PC/phone app) take FEED DATA over the network;
+        # pages never leave this box. The door token is that data
+        # link's password - same fail-closed posture as the radio door.
+        local WT="$APPDIR/secrets/webserve.token"
+        if [[ -f "$WT" ]]; then
+          echo "Data door is OPEN to the network (token exists)."
+          if yesno "CLOSE the data door (token deleted, loopback-only, restart)"; then
+            need_root datadoor
+            rm -f "$WT"
+            sed -i 's|"host": "[^"]*"|"host": "127.0.0.1"|' "$CJ"
+            systemctl restart "$SERVICE"
+            sleep 2
+            systemctl --no-pager --lines 5 status "$SERVICE" || true
+            echo "Data door closed - the feed answers this box only."
+            pause
+          fi
+        else
+          echo "Opening the DATA DOOR: display devices on your network may"
+          echo "take the feed (password required, TX unchanged). Pages never"
+          echo "leave this box - data only."
+          if yesno "Create the data-door password and open the door"; then
+            need_root datadoor
+            umask 077
+            python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$WT"
+            chmod 600 "$WT"
+            umask 022
+            sed -i 's|"host": "[^"]*"|"host": "0.0.0.0"|' "$CJ"
+            sed -i "s|\"token_file\": \"\"|\"token_file\": \"$APPDIR/secrets/webserve.token\"|" "$CJ"
+            systemctl restart "$SERVICE"
+            sleep 2
+            systemctl --no-pager --lines 5 status "$SERVICE" || true
+            echo
+            echo "DATA-DOOR PASSWORD - shown this one time only:"
+            cat "$WT"
+            echo
+            local lanip
+            lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo "On the display device (PC app, Direct mode):"
+            echo "  - Host node address: ${lanip:-<this box IP>}"
+            echo "  - Password: paste the one above (asked once, remembered)"
+            pause
+          fi
+        fi ;;
       txmode)
         local cur_tx new_tx
         cur_tx=$(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')

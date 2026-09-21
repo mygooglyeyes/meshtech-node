@@ -36,6 +36,40 @@ def test_pulse_reflects_observations():
     assert pkt.data_type == codec.TYPE_PULSE
 
 
+def test_pulse_never_counts_unknown_sender_as_node():
+    # PROJECT.md rule 3 + phantom-node guard: group traffic carries no
+    # sender identity (prefix=0). With all-traffic recording those rows
+    # are the majority - they must inflate rx/hour, never "active nodes".
+    builder, store = make_builder()
+    now = time.time()
+    for i in range(4):
+        store.add(Observation(recv_ts=now, origin_ts=None,
+                              prefix=0x10 + i, lat=None, lon=None,
+                              path_prefixes=[0xAB]), now=now)
+    for _ in range(20):                     # heavy foreign chatter
+        store.add(Observation(recv_ts=now, origin_ts=None,
+                              prefix=0, lat=None, lon=None,
+                              path_prefixes=[0xAB]), now=now)
+    pkt = builder.build_pulse(now=now)
+    pulse = codec.decode_pulse(pkt.payload[3:])
+    assert pulse.active_total == 4          # NOT 24
+    assert pulse.rx_per_hour == 24          # traffic IS counted
+
+
+def test_active_prefixes_skip_unknown_sender():
+    # The store's section grouping skips prefix=0 too (no phantom node
+    # in any section list).
+    from meshtech_node.observations import RollingStore
+    store = RollingStore()
+    now = time.time()
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x42,
+                          lat=37.0, lon=-122.0, path_prefixes=[]), now=now)
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0,
+                          lat=None, lon=None, path_prefixes=[0xAB]), now=now)
+    groups = store.active_prefixes(lambda o: 1, now=now)
+    assert groups == {1: [0x42]}            # no "0" key, no phantom
+
+
 def test_section_stats_and_routes():
     builder, store = make_builder()
     now = time.time()

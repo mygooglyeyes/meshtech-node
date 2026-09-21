@@ -158,7 +158,11 @@ class FeedBuilder:
         counts = []
         total_set = set()
         for obs in self.store.observations(now=now):
-            total_set.add(obs.prefix)
+            if obs.prefix != 0:
+                # prefix=0 = sender honestly unknown (group wire carries
+                # no identity) - never a "node 0" in the totals. Node
+                # identity comes from adverts only.
+                total_set.add(obs.prefix)
         for sid in range(1, self.geometry.section_count + 1):
             active, _, _ = self._section_stats(sid, now=now)
             counts.append(min(active, 255))

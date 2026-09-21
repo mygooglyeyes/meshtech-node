@@ -322,6 +322,7 @@ class AdvertInfo:
     lat: Optional[float] = None
     lon: Optional[float] = None
     name: Optional[str] = None
+    pubkey: Optional[bytes] = None   # full 32B key - path-tag matching
 
     @property
     def node_class(self) -> int:
@@ -335,10 +336,11 @@ def parse_advert(payload: bytes) -> Optional[AdvertInfo]:
     if len(payload) < 32 + 4 + 64:
         return None
     prefix = payload[0]
+    pubkey = payload[0:32]              # full key: matches path tags
     origin_ts = float(int.from_bytes(payload[32:36], "little"))
     appdata = payload[100:]
     if not appdata:
-        return AdvertInfo(prefix, origin_ts, 0)
+        return AdvertInfo(prefix, origin_ts, 0, pubkey=pubkey)
     flags = appdata[0]
     idx = 1
     lat = lon = None
@@ -352,4 +354,4 @@ def parse_advert(payload: bytes) -> Optional[AdvertInfo]:
     name = None
     if flags & 0x80:                                   # has-name
         name = appdata[idx:].decode("utf-8", "replace").rstrip("\x00") or None
-    return AdvertInfo(prefix, origin_ts, flags, lat, lon, name)
+    return AdvertInfo(prefix, origin_ts, flags, lat, lon, name, pubkey)

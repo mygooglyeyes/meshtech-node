@@ -261,7 +261,20 @@ class WebServe:
     async def _ws_handler(self, request) -> web.Response:
         peer = request.remote or "?"
         if self.auth is not None:
+            # Token via WS subprotocol ("bearer.<token>"): browsers
+            # cannot set custom headers, but they DO control the
+            # subprotocol list. The node picks the bearer protocol when
+            # it matches (constant-time); anything else is refused
+            # before the socket is upgraded - fail closed. Non-browser
+            # clients may use the X-Node-Token header as before.
             candidate = request.headers.get("X-Node-Token", "")
+            if not candidate:
+                for proto in request.headers.get("Sec-WebSocket-Protocol",
+                                                 "").split(","):
+                    proto = proto.strip()
+                    if proto.startswith("bearer."):
+                        candidate = proto[len("bearer."):]
+                        break
             if not candidate or not self.auth.check(candidate, peer):
                 log.info("WS auth refused for %s", peer)
                 return web.Response(status=401, text="unauthorized")

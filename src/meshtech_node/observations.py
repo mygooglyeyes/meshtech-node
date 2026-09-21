@@ -204,11 +204,17 @@ class RollingStore:
 
     def active_prefixes(self, section_of, *, now: Optional[float] = None,
                         ) -> Dict[int, List[int]]:
-        """prefixes of active nodes grouped by section id (-1 = unknown)."""
+        """prefixes of active nodes grouped by section id (-1 = unknown).
+
+        prefix=0 is SKIPPED: group traffic carries no sender identity
+        (prefix=0 = honestly unknown), and with all-traffic recording
+        (PROJECT.md rule 3) unknown-sender rows now form the majority.
+        Counting them would fabricate a phantom "node 0" in the active
+        totals. Node identity comes from adverts only."""
         groups: Dict[int, List[int]] = {}
         seen = set()
         for obs in self.observations(now=now):
-            if obs.prefix in seen:
+            if obs.prefix in seen or obs.prefix == 0:
                 continue
             seen.add(obs.prefix)
             groups.setdefault(section_of(obs), []).append(obs.prefix)

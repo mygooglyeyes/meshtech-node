@@ -16,6 +16,13 @@ decoder.
   token file (mode-600, first line = password, constant-time compare,
   brute-force throttle - cleanmodem's proven rules copied). Non-loopback
   bind without a token file = the server refuses to start (fail closed).
+- DATA DOOR (SELF-CONTAINED RULE, Brett 2026-09-21): the feed link
+  may cross machines; it carries FEED DATA only - pages never leave
+  the host. The token gates that data. Browsers cannot set custom
+  WS headers, so they present it as a WebSocket subprotocol
+  (`bearer.<token>`); the node picks the matching protocol and
+  refuses everything else before the socket upgrades. Non-browser
+  clients may use the X-Node-Token header as before.
 - JSON text frames only in v1. Protocol version carried in `hello`;
   a client that sees an unknown `proto` shows an honest error and stops.
 
