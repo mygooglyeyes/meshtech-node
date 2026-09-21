@@ -12,7 +12,8 @@
     "layout_interval_seconds": 600,
     "max_packets_per_hour": 60,
     "refresh_cooldown_seconds": 30,
-    "refresh_hourly_cap": 5
+    "refresh_hourly_cap": 5,
+    "tx_enabled": false
   },
   "webserve": {
     "host": "127.0.0.1",

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac as hmac_mod
+import itertools
 import json
 import logging
 import os
@@ -93,6 +94,39 @@ class _Auth:
         return ok
 
 
+class _GlobalRefreshBudget:
+    """S2 (2026-09-20 review, Brett's design): wire refreshes draw from
+    a GLOBAL airtime budget, not a per-client one - a browser can mint
+    a new request id per click, so per-client maps saw a fresh client
+    each time and never throttled. Whole-map refreshes are the big
+    spender (a LAYOUT burst): only 2 allowed per 30 minutes across ALL
+    connections. Per-section refreshes are cheap and stay per-
+    connection (rate limiter via sender_prefix) so casual browsing
+    doesn't burn the global budget. On-air requests never touch this:
+    the brain's own limiter gates them as before."""
+
+    def __init__(self, max_per_window: int = 2, window_s: float = 1800.0):
+        self.max = max_per_window
+        self.window = window_s
+        self._hits: List[float] = []
+
+    def allow(self, *, now: Optional[float] = None) -> bool:
+        now = time.time() if now is None else now
+        self._hits = [t for t in self._hits if now - t < self.window]
+        if len(self._hits) >= self.max:
+            return False
+        self._hits.append(now)
+        return True
+
+    def retry_after_s(self, *, now: Optional[float] = None) -> int:
+        now = time.time() if now is None else now
+        self._hits = [t for t in self._hits if now - t < self.window]
+        if len(self._hits) < self.max or not self._hits:
+            return 0
+        oldest = min(self._hits)
+        return max(1, int(self.window - (now - oldest)))
+
+
 class WebServe:
     def __init__(self, host: str, port: int, *,
                  token: Optional[str] = None,
@@ -104,6 +138,7 @@ class WebServe:
         self.auth = _Auth(token) if token else None
         self.on_refresh = on_refresh
         self.feed_info = feed_info or {}
+        self.map_budget = _GlobalRefreshBudget()
         # state_provider = the brain's honest state snapshot (listener
         # + feed truth the BLE path can never see); None -> nulls.
         self.state_provider = state_provider
@@ -114,6 +149,7 @@ class WebServe:
         # req_id is on top; the shell's FeedTap reads current_req_id to
         # tag the answer burst's packets with in_reply_to.
         self._req_stack: List[str] = []
+        self._conn_counter = itertools.count(1)
         self.started_at = time.time()
         self.app = web.Application()
         self.app.router.add_get("/feed", self._ws_handler)
@@ -203,11 +239,16 @@ class WebServe:
             if not candidate or not self.auth.check(candidate, peer):
                 log.info("WS auth refused for %s", peer)
                 return web.Response(status=401, text="unauthorized")
-        ws = web.WebSocketResponse(heartbeat=SILENCE_TIMEOUT_S)
+        ws = web.WebSocketResponse(heartbeat=SILENCE_TIMEOUT_S,
+                                   max_msg_size=64 * 1024)
         await ws.prepare(request)
         self.clients.add(ws)
-        log.info("WS client connected (%s) - total %d", peer,
-                 len(self.clients))
+        # S2: stable per-CONNECTION client identity for the brain's rate
+        # limiter - the browser's per-click req_id minted a new identity
+        # every refresh and sidestepped the cooldown/cap entirely.
+        conn_id = f"ws#{next(self._conn_counter)}"
+        log.info("WS client connected (%s as %s) - total %d", peer,
+                 conn_id, len(self.clients))
         try:
             hello = {
                 "type": "hello", "proto": PROTO_VERSION,
@@ -227,7 +268,7 @@ class WebServe:
                         obj = json.loads(msg.data)
                     except json.JSONDecodeError:
                         continue
-                    await self._client_msg(ws, obj)
+                    await self._client_msg(ws, obj, conn_id)
                 elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
                     break
         finally:
@@ -236,7 +277,7 @@ class WebServe:
                      len(self.clients))
         return web.Response(status=200)
 
-    async def _client_msg(self, ws, obj: dict) -> None:
+    async def _client_msg(self, ws, obj: dict, conn_id: str = "ws") -> None:
         mtype = obj.get("type")
         if mtype == "ping":
             await self._send(ws, {"type": "pong",
@@ -251,15 +292,30 @@ class WebServe:
         elif mtype == "refresh":
             req_id = str(obj.get("req_id", ""))[:40]
             kind_s = obj.get("kind")
+            is_map = False
             if kind_s == "layout":
                 kind = codec.REFRESH_KIND_SECTION
                 target = 0
+                is_map = True          # whole-map = the big burst
             elif kind_s == "section":
                 kind = codec.REFRESH_KIND_SECTION
                 target = obj.get("section")
                 if not isinstance(target, int) or not 0 <= target <= 8:
                     return
             else:
+                return
+            # S2: whole-map refreshes draw from the GLOBAL budget (2 per
+            # 30 min across all connections); per-section refreshes do
+            # not. Refusals name the wait, so the app can show it.
+            if is_map and not self.map_budget.allow():
+                wait = self.map_budget.retry_after_s()
+                log.info("whole-map refresh refused - global budget "
+                         "spent, %ds until the next slot", wait)
+                await self._send(ws, {"type": "ack",
+                                      "req_id": req_id,
+                                      "accepted": False,
+                                      "reason": "map_budget",
+                                      "retry_after_s": wait})
                 return
             nonce = secrets.randbits(16)
             req = codec.RefreshReq(seq=nonce, kind=kind, target=target,
@@ -268,7 +324,9 @@ class WebServe:
             if self.on_refresh is not None:
                 self._req_stack.append(req_id)
                 try:
-                    await self.on_refresh(req, f"ws:{req_id}")
+                    # conn_id (stable per connection) feeds the brain's
+                    # per-client cooldown/cap - not the per-click req_id.
+                    await self.on_refresh(req, conn_id)
                 finally:
                     self._req_stack.pop()
                 await self._send(ws, {"type": "ack",

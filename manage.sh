@@ -279,6 +279,7 @@ do_configure() {
       "syncword"   "sync word (hex)            (cur: $(grep -E '^sync_word *=' "$MC" | awk '{print $3}'))" \
       "preamble"   "preamble length            (cur: $(grep -E '^preamble_length *=' "$MC" | awk '{print $3}'))" \
       "power"      "TX power dBm (UNUSED while TX off)" \
+      "txmode"     "radio TRANSMIT on/off      (cur: $(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')) - RESTARTS the service" \
       "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
       "back"       "save nothing and go back")
     case "$pick" in
@@ -292,6 +293,31 @@ do_configure() {
         local port
         port=$(inputbox "web app port" "$(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+')")
         sed -i "s|\"port\": [0-9]*,|\"port\": ${port},|" "$CJ" ;;
+      txmode)
+        local cur_tx new_tx
+        cur_tx=$(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')
+        if [[ "$cur_tx" == "true" ]]; then
+          new_tx=false
+          echo "Turning radio TRANSMIT **OFF** - the node becomes listen-only."
+        else
+          new_tx=true
+          echo "Turning radio TRANSMIT **ON** - the node will put feed packets ON THE AIR."
+          echo "The airtime budget and duty cap in config.json still apply."
+        fi
+        if yesno "Change tx_enabled to ${new_tx} and restart the service"; then
+          sed -i "s|\"tx_enabled\": *[a-z]*|\"tx_enabled\": ${new_tx}|" "$CJ"
+          grep -q '"tx_enabled"' "$CJ" || \
+            sed -i "s|\"refresh_hourly_cap\": *[0-9]*|&,\n    \"tx_enabled\": ${new_tx}|" "$CJ"
+          need_root txmode
+          systemctl restart "$SERVICE"
+          sleep 2
+          systemctl --no-pager --lines 5 status "$SERVICE" || true
+          echo
+          echo "tx_enabled is now ${new_tx}."
+          pause
+        else
+          echo "unchanged."
+        fi ;;
       back) return ;;
     esac
   done

@@ -56,6 +56,33 @@ class _UnwiredClient:
         await asyncio.Event().wait()      # parks until cancelled
 
 
+def _normalize_ingest(item: object) -> tuple:
+    """Normalize one queue item from the packet source into
+    (observations, node_rows, extras).
+
+    The 2026-09-20 hilltop lesson: RawPacketSource (Adapter A) puts ONE
+    Observation per heard packet, but this drain unpacked a 3-tuple -
+    the first real packet raised ValueError, ingest died, its finally
+    cancelled the source, and the node went deaf with the radio still
+    healthy. The queue contract is now explicit at the boundary:
+
+    - an Observation  -> the real Adapter-A shape (no node rows, no
+      extras; advert rows are derived from the observations themselves)
+    - a (obs, nodes, extras) triple -> tolerated for future sources
+    - anything else   -> logged once and skipped, never fatal
+    """
+    from .observations import Observation
+    if isinstance(item, Observation):
+        return [item], None, None
+    if isinstance(item, tuple) and len(item) == 3:
+        obs, nodes, extras = item
+        return (list(obs) if obs else []), nodes, extras
+    if isinstance(item, list):
+        return item, None, None
+    log.warning("ingest dropped an unrecognized queue item: %r", item)
+    return [], None, None
+
+
 class ScopeService:
     def __init__(self, settings: Settings, *, use_demo: bool = False,
                  origin: Optional[int] = None,
@@ -415,11 +442,17 @@ class ScopeService:
         task = asyncio.create_task(source.run(queue, stop))
         try:
             while not self._stop.is_set():
-                obs, nodes, extras = await queue.get()
-                for o in obs:
+                item = await queue.get()
+                # ADAPTER-A SEAM (the 2026-09-20 hilltop silent death):
+                # the source puts ONE Observation per packet (a real
+                # heard advert). Accept that shape, and be tolerant of
+                # a list/triple shape only if a future source produces
+                # it - never crash the ingest chain on a shape drift.
+                obs_list, nodes, extras = _normalize_ingest(item)
+                for o in obs_list:
                     self.store.add(o)
                 self._ingest_node_rows(nodes)
-                self._ingest_advert_rows(obs)
+                self._ingest_advert_rows(obs_list)
                 self._ingest_extras(extras)
         finally:
             stop.set()
@@ -461,6 +494,14 @@ class ScopeService:
                 await self._send_burst([pkt], gap=0.0)
             now = time.time()
             if now - self.builder._last_layout >= feed.layout_interval_seconds:
+                # C3: prune the node table on the layout cadence (rare):
+                # 14d silent -> stale (off maps), 30d -> forgotten.
+                counts = self.store.prune_nodes(now=now)
+                if counts["stale"] or counts["forgotten"]:
+                    log.info("node table pruned: %d stale, %d forgotten "
+                             "(table: %d nodes)", counts["stale"],
+                             counts["forgotten"],
+                             self.store.active_nodes_ever())
                 pkt = self.builder.build_layout()
                 await self._send_burst([pkt], gap=0.0)
                 self.builder._last_layout = now

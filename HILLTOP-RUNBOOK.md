@@ -123,6 +123,38 @@ accepted stand-down). Abort at any time = one command (bottom).
     sudo ./manage.sh start | stop | restart | status | logs
     sudo ./manage.sh uninstall   # removes the service; asks before deleting files
 
+## RADIO TRANSMIT (the txmode toggle - a separate, explicit decision)
+
+TX stays OFF through this whole runbook (listen-only). The one and
+only switch is in the configure menu:
+
+    sudo ./manage.sh configure   # pick "txmode"
+
+- Shows the current state and asks before changing anything.
+- Flips `tx_enabled` in /opt/meshtech-node/config.json (the single
+  source of truth - no other copy of the flag exists), restarts the
+  service, and shows the new status.
+- Turn ON only when YOU decide the data feed is proven. Turn OFF any
+  time the same way; the node returns to listen-only on restart.
+- Proof of state, any time: the log line after boot says either
+  'TX off, listen-only' or the feed starts TX pulses.
+
+## WEB APP REFRESH LIMITS (what users will see)
+
+The map refresh button is rationed to protect airtime (S2, 2026-09-20):
+
+- Whole-map refreshes: 2 per 30 minutes for the WHOLE SERVER, all
+  connected browsers combined. A third attempt is refused with an
+  event-log line saying how long to wait (~minutes). Not an error -
+  the budget doing its job.
+- Per-section refreshes: not drawn from that budget; each connection
+  has its own small cooldown/cap, so browsing routes is never blocked
+  by someone else's map refresh.
+- On-air refresh requests from radios follow the same brain limiter as
+  always; the web budget is separate and only guards the wire path.
+- With TX off (Gate 1) none of this costs airtime - the budget still
+  applies so the behavior is identical when TX turns on.
+
 ## EXIT / ABORT (back to the old world in one line)
 
     sudo ./manage.sh stop && sudo systemctl enable --now openhop-repeater

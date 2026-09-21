@@ -82,6 +82,11 @@ class FeedCfg:
     # Multi-host mode: only the elected owner of a section answers a
     # refresh for it; off = answer everything (single-host default).
     multi_host: bool = False
+    # Gate 1 master switch (C2, 2026-09-20 review): the ONE tx_enabled
+    # source. False = listen-only; the sender refuses every transmit
+    # loudly. Toggled via manage.sh's radio on/off (which edits this
+    # value and restarts the service). Nothing hardcodes it anymore.
+    tx_enabled: bool = False
     # How old an advert row (seconds, from last_seen) may be and still
     # count as an active node. Adverts are periodic (hours apart);
     # 24 h default keeps a slow-advertising mesh visible without
@@ -298,6 +303,7 @@ def load(config_path: str) -> Settings:
                                               "advert_fresh_seconds",
                                               86400.0, errors,
                                               "feed.advert_fresh_seconds")),
+        tx_enabled=bool(feed_raw.get("tx_enabled", False)),
     )
 
     radio_raw = _dict(raw, "radio")

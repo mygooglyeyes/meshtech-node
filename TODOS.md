@@ -1,5 +1,18 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## Database maintenance tasks (Brett, 2026-09-20)
+
+The node table currently lives in memory only (RollingStore) and is
+pruned on the layout cadence (stale 14d -> off maps, lost 30d ->
+forgotten). The moment persistence lands (sqlite or similar), add a
+maintenance story with it:
+
+- periodic VACUUM/compact of the database file
+- prune of old observations/packets consistent with the node rules
+  (stale 14d / lost 30d)
+- a `manage.sh` entry (or automatic task) that reports table sizes so
+  growth is visible before it becomes a problem
+
 ## Add an `update` option to manage.sh (Brett, 2026-09-20 - for later)
 
 One menu/command option that safely updates an installed box:

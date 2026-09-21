@@ -67,6 +67,25 @@ Client -> server:
                    answers come back as `packet` with `in_reply_to`.
                  - gives the app a no-radio refresh path at the bench;
                    the over-the-air refresh path keeps working too.
+                 - REFRESH BUDGET (S2, Brett's design, 2026-09-20): a
+                   whole-map refresh (kind:"layout") draws from a
+                   GLOBAL budget of 2 per 30 minutes across ALL
+                   connections (a browser can mint a fresh req_id per
+                   click, so per-client limits never throttle maps).
+                   Per-section refreshes do NOT touch the global budget
+                   - they stay on the per-connection cooldown/cap via
+                   the connection's stable conn_id. On-air requests
+                   never touch the global budget: the brain's own
+                   limiter gates them as always.
+
+    ack      {type:"ack", req_id:"r7", accepted:true}
+                  {type:"ack", req_id:"r7", accepted:false,
+                   reason:"map_budget", retry_after_s:1183}
+                 - the server's verdict on a `refresh`, sent BEFORE any
+                   answer packets. accepted:false + reason:"map_budget"
+                   = the global whole-map budget is spent; the app must
+                   show the wait (never a silent no-op). Other refusals
+                   name their reason; the app logs it verbatim.
 
 ## Backpressure and drops
 
@@ -101,6 +120,19 @@ Client -> server:
   (direct-served vs radio-heard) a two-second eyeball job.
 - A later "dual" mode (both sources live, duplicates suppressed by seq)
   is deliberately OUT of v1; one honest source at a time first.
+
+## Refresh rules (v1.1, the S2 fix)
+
+- Whole-map refresh (`kind:"layout"`): GLOBAL 2 per 30 min, all
+  connections combined. Refused with ack accepted:false,
+  reason:"map_budget", retry_after_s = seconds until the next slot.
+- Per-section refresh (`kind:"section"`): per-connection cooldown and
+  hourly cap only (the brain's limiter via the connection's stable
+  conn_id). Cheap, browsing-friendly, never blocked by other users.
+- On-air refresh requests: unchanged - the brain's limiter as before.
+- Rationale: the browser can mint a new req_id per click, so any
+  per-request identity is worthless for throttling; the budget must
+  live server-side, tied to the scarce resource it protects - airtime.
 
 ## What v1 deliberately does NOT do
 

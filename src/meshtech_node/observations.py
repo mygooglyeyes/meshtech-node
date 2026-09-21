@@ -90,6 +90,7 @@ class RollingStore:
         now = time.time() if now is None else now
         node = self._nodes.setdefault(prefix, {})
         node.update({"lat": lat, "lon": lon, "last_advert_ts": now})
+        node.pop("stale", None)      # heard again: no longer stale (C3)
         if name:
             node["name"] = name
 
@@ -104,12 +105,64 @@ class RollingStore:
         if value != 0:
             node["node_class"] = value
 
-    def add_name(self, prefix: int, name: str) -> None:
-        self._nodes.setdefault(prefix, {})["name"] = name
+    def add_name(self, prefix: int, name: str, *,
+                 now: Optional[float] = None) -> None:
+        """Record a name. C3: name-only evidence also counts as a
+        hearing - else a node heard only in group traffic would carry
+        no last_advert_ts and dodge the lifecycle entirely."""
+        now = time.time() if now is None else now
+        node = self._nodes.setdefault(prefix, {})
+        node["name"] = name
+        node["last_advert_ts"] = max(float(node.get("last_advert_ts", 0)),
+                                     now)
+        node.pop("stale", None)
 
     def add_backbone_neighbor(self, nb: BackboneNeighbor) -> None:
         """Record/refresh one direct RF neighbor (repeater-measured)."""
         self._neighbors[nb.prefix] = nb
+
+    # ------------------------------------------------- node lifecycle (C3)
+
+    STALE_AFTER_S = 14 * 86400.0     # no advert for 14 days -> not on maps
+    FORGET_AFTER_S = 30 * 86400.0    # silent 30 days -> pruned entirely
+
+    def prune_nodes(self, *, now: Optional[float] = None) -> dict:
+        """C3 (2026-09-20 review, Brett's rule): the node table never
+        grows forever. A node unheard for 14 days goes STALE (kept in
+        the table but excluded from map/active aggregation), and one
+        unheard for 30 days is FORGOTTEN (deleted). Returns the counts
+        for honest logging."""
+        now = time.time() if now is None else now
+        stale = forgotten = 0
+        for prefix, node in list(self._nodes.items()):
+            last = node.get("last_advert_ts")
+            if last is None:
+                continue               # no evidence of age: leave it
+            age = now - float(last)
+            if age > self.FORGET_AFTER_S:
+                del self._nodes[prefix]
+                forgotten += 1
+            elif age > self.STALE_AFTER_S:
+                node["stale"] = True
+                stale += 1
+        return {"stale": stale, "forgotten": forgotten}
+
+    def node_is_stale(self, prefix: int, *, now: Optional[float] = None,
+                      ) -> bool:
+        node = self._nodes.get(prefix)
+        if not node:
+            return False
+        if node.get("stale"):
+            return True
+        last = node.get("last_advert_ts")
+        if last is None:
+            return False
+        return (now if now is not None else time.time()) - \
+            float(last) > self.STALE_AFTER_S
+
+    def active_nodes_ever(self) -> int:
+        """Total node-table size (the C3 growth metric for logs)."""
+        return len(self._nodes)
 
     def backbone_neighbors(self) -> List[BackboneNeighbor]:
         """All known direct neighbors, strongest EWMA score first.
@@ -139,6 +192,12 @@ class RollingStore:
 
     def known_nodes(self) -> List[int]:
         return sorted(self._nodes.keys())
+
+    def map_nodes(self) -> List[Dict[str, object]]:
+        """C3: the map's node table - stale (14d silent) nodes are
+        EXCLUDED here, forgotten (30d) are already deleted."""
+        return [{"prefix": p, **node} for p, node in
+                self._nodes.items() if not node.get("stale")]
 
     def rx_per_hour(self, *, now: Optional[float] = None) -> int:
         return len(self.observations(now=now))

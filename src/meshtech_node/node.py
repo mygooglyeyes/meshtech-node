@@ -48,9 +48,9 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
 
     sender: RadioSender = RadioSender(
         None, channel,
-        tx_enabled=False,          # Gate 1: listen-only, always at start
-        bench_no_radio=bench_no_radio,
-    )
+        tx_enabled=settings.feed.tx_enabled,   # C2: config is the ONE
+        bench_no_radio=bench_no_radio,         # source (Gate 1 default
+    )                                          # False in the template)
     modem = None
     if not bench_no_radio:
         # REAL MODE: the loopback link to the embedded radio server
@@ -74,12 +74,12 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
         settings, client=sender, use_demo=False,
     )
     brain.external_source = source
-    brain.tx_enabled = False       # mirror the sender's guard at the brain
+    brain.tx_enabled = settings.feed.tx_enabled   # C2: one source
 
     serve = webserve.WebServe(
         settings.webserve.host, settings.webserve.port,
         token=_token(settings),
-        feed_info={"tx_enabled": False,
+        feed_info={"tx_enabled": settings.feed.tx_enabled,
                    "feed": {"channel": settings.channel.name,
                             "bench_no_radio": bench_no_radio}},
         state_provider=lambda: _state_snapshot(brain, source),
@@ -251,10 +251,17 @@ async def _main(argv: Optional[list] = None) -> int:
     try:
         done, _pending = await asyncio.wait(
             tasks, return_when=asyncio.FIRST_COMPLETED)
+        exit_code = 0
         for task in done:
             exc = task.exception()
             if exc and task.get_name() != "stop":
                 log.error("%s died: %r", task.get_name(), exc)
+                # C1 (2026-09-20 review): a dead core task must mean a
+                # FAILED process, not a clean one - systemd's
+                # Restart=on-failure ignores exit 0, so a clean exit
+                # left the box dark until a human noticed.
+                exit_code = 1
+        return exit_code
     finally:
         brain.stop()
         for task in tasks:
@@ -263,7 +270,6 @@ async def _main(argv: Optional[list] = None) -> int:
         await runner.cleanup()
         if radio is not None:
             await radio.stop()
-    return 0
 
 
 def _is_loopback(host: str) -> bool:
