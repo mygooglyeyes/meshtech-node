@@ -1,5 +1,34 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## datadoor: "show the password again" option (Brett hit, 2026-09-21)
+
+The data-door password prints ONCE when the door is created. If it
+scrolls away or is lost, the only recovery is close + reopen (which
+revokes and regenerates). Add a datadoor choice that re-prints the
+EXISTING password (and the address) without regenerating it - and
+print it in plain text that stays on screen (no popup, pause after).
+
+## BUG: install never restarts an already-running service (found 2026-09-21 11:24)
+
+do_install copies the NEW code into /opt, but its final "start the
+service?" runs `systemctl start` - a no-op when the service is already
+running. Result: the box keeps running the OLD program after every
+install until someone remembers to `sudo ./manage.sh restart` by hand
+(the 401-from-stale-code confusion, 2026-09-21 11:24). Fix: if the
+service is active at the end of install, RESTART it (and say so); the
+start question then only applies when it was not running.
+
+## BUG: install silently revokes companion access (found 2026-09-21 11:17)
+
+do_install rewrites modem.conf's token_file/controller_file back to
+secrets/modem.token, so after ANY install the radio server's door
+reverts to the internal token and every companion device (observer
+token) is locked out - hilltop logged `raw-token auth rejected` spam
+from the PC companion until it was stopped. Fix: install must PRESERVE
+an existing observer.token setting (or re-link it) instead of forcing
+modem.token. Related: decide whether `companions` ON should survive
+reinstall by design.
+
 ## Database maintenance tasks (Brett, 2026-09-20)
 
 The node table currently lives in memory only (RollingStore) and is

@@ -303,7 +303,7 @@ do_configure() {
       "txmode"     "radio TRANSMIT on/off      (cur: $(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')) - RESTARTS the service" \
       "companions" "let other devices LISTEN to this radio (PC/phone simulator)" \
       "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
-      "datadoor"   "feed DATA door for devices (PC/phone app) - open/close" \
+      "datadoor"   "feed DATA door - $( [[ -f "$APPDIR/secrets/webserve.token" ]] && echo OPEN || echo CLOSED ) / show password" \
       "back"       "save nothing and go back")
     case "$pick" in
       frequency) set_conf frequency_hz "$(inputbox "frequency_hz" "$cur")" "$MC" ;;
@@ -319,48 +319,65 @@ do_configure() {
       datadoor)
         # DATA DOOR (SELF-CONTAINED RULE, Brett 2026-09-21): display
         # devices (the PC/phone app) take FEED DATA over the network;
-        # pages never leave this box. The door token is that data
-        # link's password - same fail-closed posture as the radio door.
+        # pages never leave this box. Flow per Brett 2026-09-21: the
+        # state is visible up front, the action matches the state, and
+        # the CURRENT password is always viewable - nothing drops to a
+        # bare prompt, the pause prompt is always the last line.
         local WT="$APPDIR/secrets/webserve.token"
-        if [[ -f "$WT" ]]; then
-          echo "Data door is OPEN to the network (token exists)."
-          if yesno "CLOSE the data door (token deleted, loopback-only, restart)"; then
+        local door_state="CLOSED"
+        [[ -f "$WT" ]] && door_state="OPEN"
+        echo
+        echo "DATA DOOR state: $door_state"
+        if [[ "$door_state" == "OPEN" ]]; then
+          # Open: show the connection facts + password, offer to close.
+          local lanip
+          lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
+          echo
+          echo "On the display device (PC app, Direct mode):"
+          echo "  - Host node address: ${lanip:-<this box IP>}"
+          echo "  - Password: $(cat "$WT")"
+          echo
+          if yesno "CLOSE the data door (password revoked, loopback-only, restart)"; then
             need_root datadoor
             rm -f "$WT"
             sed -i 's|"host": "[^"]*"|"host": "127.0.0.1"|' "$CJ"
             systemctl restart "$SERVICE"
             sleep 2
-            systemctl --no-pager --lines 5 status "$SERVICE" || true
-            echo "Data door closed - the feed answers this box only."
-            pause
+            echo "Data door CLOSED - the feed answers this box only."
+          else
+            echo "Door left open."
           fi
         else
+          # Closed: the only action is create-a-password-and-open.
           echo "Opening the DATA DOOR: display devices on your network may"
           echo "take the feed (password required, TX unchanged). Pages never"
           echo "leave this box - data only."
-          if yesno "Create the data-door password and open the door"; then
+          if yesno "Generate a new password and OPEN the door"; then
             need_root datadoor
             umask 077
             python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$WT"
             chmod 600 "$WT"
             umask 022
             sed -i 's|"host": "[^"]*"|"host": "0.0.0.0"|' "$CJ"
-            sed -i "s|\"token_file\": \"\"|\"token_file\": \"$APPDIR/secrets/webserve.token\"|" "$CJ"
+            sed -i "s|\"token_file\": *\"[^\"]*\"|\"token_file\": \"$APPDIR/secrets/webserve.token\"|" "$CJ"
             systemctl restart "$SERVICE"
             sleep 2
-            systemctl --no-pager --lines 5 status "$SERVICE" || true
-            echo
-            echo "DATA-DOOR PASSWORD - shown this one time only:"
-            cat "$WT"
-            echo
             local lanip
             lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo
+            echo "DATA-DOOR PASSWORD (visible any time under datadoor):"
+            cat "$WT"
+            echo
             echo "On the display device (PC app, Direct mode):"
             echo "  - Host node address: ${lanip:-<this box IP>}"
             echo "  - Password: paste the one above (asked once, remembered)"
-            pause
+          else
+            echo "Door left closed."
           fi
-        fi ;;
+        fi
+        echo
+        pause
+        ;;
       txmode)
         local cur_tx new_tx
         cur_tx=$(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')
