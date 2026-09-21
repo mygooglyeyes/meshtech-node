@@ -259,9 +259,17 @@ def build_config(raw: dict) -> ModemConfig:
     if "coding_rate" in raw:
         cr = _as_int("coding_rate", raw["coding_rate"], 1, 4)
         cfg.coding_rate = cr + 4          # config index 1..4 -> CR 5..8
+    # Bandwidth: accept BOTH names. The shipped configs and manage.sh
+    # write bandwidth_hz (Hz, e.g. 62500); older notes used
+    # bandwidth_khz (e.g. 62.5). The name mismatch (caught on hilltop
+    # 2026-09-21) silently ignored the written line - never again.
+    # Hz wins if both appear.
     if "bandwidth_khz" in raw:
         cfg.bandwidth_hz = int(round(_as_float(
             "bandwidth_khz", raw["bandwidth_khz"], 7.8, 500.0) * 1000))
+    if "bandwidth_hz" in raw:
+        cfg.bandwidth_hz = _as_int("bandwidth_hz", raw["bandwidth_hz"],
+                                   7_800, 500_000)
     if "sync_word" in raw:
         cfg.sync_word = _as_int("sync_word", raw["sync_word"], 0, 0xFFFF)
     if "preamble_length" in raw:

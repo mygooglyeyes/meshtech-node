@@ -17,6 +17,7 @@
 # plain terminal over ssh.
 set -euo pipefail
 cd "$(dirname "$0")"
+SCRIPTDIR="$(pwd -P)"
 
 SERVICE=meshtech-node
 SECRETS=secrets
@@ -114,20 +115,32 @@ ask_default() {
   echo "${a:-$2}"
 }
 
+# conf_value <file> <key> -> the key's value from a key = value file
+# (empty string when absent). The single reader for prompt defaults.
+conf_value() {
+  grep -E "^$2 *=" "$1" 2>/dev/null | head -1 | awk '{print $3}'
+}
+
 # guided radio questions -> modem.conf. Fully self-contained: the
-# defaults ARE the shipped US-band settings; nothing is read from any
-# other software on the box.
+# defaults ARE the shipped US-band settings (deploy/modem.conf),
+# nothing is read from any other software on the box. (2026-09-21 fix:
+# defaults previously came from the box's LIVE copy, which an earlier
+# run or a manual edit can leave with a blank line - the hilltop
+# install then showed an EMPTY bandwidth default. Ship defaults stay
+# ship defaults; the live copy is what gets WRITTEN.)
 guided_radio_questions() {
   local f="$APPDIR/modem.conf"
-  [[ -f $f ]] || f=deploy/modem.conf
+  local d="deploy/modem.conf"
+  [[ -f $d ]] || d="$SCRIPTDIR/deploy/modem.conf"
+  [[ -f $d ]] || d="$f"
   echo
   echo "-- Radio settings -------------------------------------------------"
   echo "These set how the radio listens. The defaults are the standard"
   echo "US 915 MHz mesh band - press Enter to accept each one."
   echo
-  set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(grep -E '^frequency_hz *=' $f | awk '{print $3}')")" "$f"
-  set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(grep -E '^spreading_factor *=' $f | awk '{print $3}')")" "$f"
-  set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(grep -E '^bandwidth_hz *=' $f | awk '{print $3}')")" "$f"
+  set_conf frequency_hz      "$(ask_default "Frequency in Hz (915 MHz band)" "$(conf_value "$d" frequency_hz)")" "$f"
+  set_conf spreading_factor  "$(ask_default "Spreading factor 5-12 (7 = fast + standard)" "$(conf_value "$d" spreading_factor)")" "$f"
+  set_conf bandwidth_hz      "$(ask_default "Bandwidth in Hz (62500 = standard)" "$(conf_value "$d" bandwidth_hz)")" "$f"
   # sync_word (0x12) and preamble (32) are NOT asked: they are fixed
   # mesh standards here and stay at their shipped values.
   echo
@@ -248,6 +261,9 @@ do_install() {
   echo "Install complete. The program runs from $APPDIR;"
   echo "this folder stays as your git source (updates: git pull, then"
   echo "sudo ./manage.sh install again, then restart)."
+  # Brett 2026-09-21: this summary used to scroll off instantly when
+  # the menu redrew - unreadable. Hold it until Enter is pressed.
+  pause
 }
 
 do_passwords() {
