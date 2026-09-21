@@ -24,7 +24,7 @@ from . import codec
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
 from .client import CompanionClient
 from .config import Settings
-from .feedbuilder import FeedBuilder, route_id as route_id_of
+from .feedbuilder import FeedBuilder, OutPacket, route_id as route_id_of
 from .grid import GridGeometry
 from .observations import RollingStore
 from .packetsource import (
@@ -239,9 +239,42 @@ class ScopeService:
             return
         self.rate.record(sender_prefix)
         packets = self.builder.build_refresh_response(req.kind, req.target)
+        # WHOLE-AREA refresh also carries a PULSE (last in the burst):
+        # the app's Feed-health card reads it, and Brett's rule is a
+        # refresh answers with a LIVE map, never "no pulse yet"
+        # (2026-09-21). Section-only refreshes stay cheap.
+        if target == codec.REFRESH_WHOLE_AREA:
+            packets.append(self.build_pulse_now())
         log.info("Refresh from %s: kind=%d target=%d -> %d packet(s)",
                  sender_prefix[:12], req.kind, req.target, len(packets))
         await self._send_burst(packets)
+
+    def build_pulse_now(self) -> OutPacket:  # noqa: F821 (feedbuilder)
+        """A PULSE with the service's HONEST uptime (not the builder's
+        placeholder). One builder for every pulse: the cadence loop,
+        connect-time answers, and whole-area refresh bursts all speak
+        the same truth."""
+        pulse = self.builder.build_pulse()
+        now = time.time()
+        # payload = type(2)+len(1)+ver(1)+seq(2)+origin(2)+uptime(2)
+        # -> uptime bytes at [8:10]
+        pulse.payload = bytearray(pulse.payload)
+        pulse.payload[8:10] = (int((now - self.started_at) // 60)
+                               & 0xFFFF).to_bytes(2, "little")
+        pulse.payload = bytes(pulse.payload)
+        return pulse
+
+    async def pulse_now(self, *, reason: str = "pulse_now") -> None:
+        """Build and send a PULSE immediately. Called when a new web
+        client connects (Brett, 2026-09-21: a fresh app must see the
+        Feed-health card fill right away, not wait up to one cadence).
+        Airtime-honest: one ~20 B packet through the usual budget; with
+        TX off it is refused on the air and STILL served on the wire
+        tap - exactly the cadence pulse's behavior."""
+        pulse = self.build_pulse_now()
+        log.info("PULSE on demand (%s) - uptime %d min",
+                 reason, int(time.time() - self.started_at) // 60)
+        await self._send_burst([pulse], gap=0.0)
 
     def _route_mine(self, route_id: int) -> bool:
         """Multi-host route check: any section I own contains this route."""
@@ -538,13 +571,7 @@ class ScopeService:
                 self.builder._last_beacon = now
                 log.debug("Discovery beacon sent (origin %04x)", self.origin)
             if now - self.builder._last_pulse >= feed.pulse_interval_seconds:
-                pulse = self.builder.build_pulse()
-                # honest uptime, not a placeholder: payload = type(2)+
-                # len(1)+ver(1)+seq(2)+origin(2)+uptime(2) -> uptime [8:10]
-                pulse.payload = bytearray(pulse.payload)
-                pulse.payload[8:10] = (int((now - self.started_at) // 60)
-                                       & 0xFFFF).to_bytes(2, "little")
-                pulse.payload = bytes(pulse.payload)
+                pulse = self.build_pulse_now()
                 sect = self.builder.build_sect_sum(self.builder._background_section)
                 self.builder._background_section = \
                     (self.builder._background_section + 1) % self.geometry.section_count

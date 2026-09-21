@@ -76,9 +76,14 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     brain.external_source = source
     brain.tx_enabled = settings.feed.tx_enabled   # C2: one source
 
+    # Connect-time PULSE (Brett 2026-09-21): a new web client gets the
+    # Feed-health card filled immediately. HOST feeds only - a companion
+    # has no host pulse to give (heard packets are its map).
+    connect_pulse = None if settings.feed.companion_mode else brain.pulse_now
     serve = webserve.WebServe(
         settings.webserve.host, settings.webserve.port,
         token=_token(settings),
+        on_client_connected=connect_pulse,
         feed_info={"tx_enabled": settings.feed.tx_enabled,
                    "companion_mode": settings.feed.companion_mode,
                    "feed": {"channel": settings.channel.name,

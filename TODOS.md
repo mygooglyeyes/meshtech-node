@@ -1,5 +1,36 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## Menu restart/stop/start feel hung (Brett hit, 2026-09-21)
+
+Choosing restart (and start/stop) shows NOTHING while systemctl works
+- the screen sits frozen for seconds and looks hung. Add feedback:
+print/re-echo "restarting... please wait" BEFORE the systemctl call,
+then show the status lines after. Fold into the next rewrite batch
+with the other menu fixes.
+
+## Label wording: configure menu "back" entry (Brett, 2026-09-21)
+
+The configure menu's last entry says "save nothing and go back" - but
+changes are saved the moment each one is confirmed (there is no
+batch/undo), so the label is wrong and confusing. Rewrite it to just
+"Return to menu". Brett: fix in the NEXT rewrite batch, not as a
+one-line update of its own.
+
+## configure "Return to menu" dumps to the CLI (Brett hit, 2026-09-21)
+
+Choosing "Return to menu" on the configure screen exits to the command
+line instead of returning to the main menu. CONFIRMED (Brett tested
+2026-09-21): from the MAIN menu the flow works exactly right
+(configure -> back -> main menu). The dump-to-CLI happens ONLY when
+`sudo ./manage.sh configure` is run DIRECTLY - that command-line path
+calls do_configure with no do_menu wrapper, so "return" has no menu to
+return to and the script just ends. Fix in the next rewrite batch:
+when invoked directly, do_configure's exit should hand over to the
+main menu (do_menu) instead of falling off the end of the script - the
+runbook sells manage.sh as the ONE entry point, so ending inside it
+fits. Check the same treatment for any other sub-command that can
+loop (install, passwords, verify).
+
 ## datadoor: "show the password again" option (Brett hit, 2026-09-21)
 
 The data-door password prints ONCE when the door is created. If it

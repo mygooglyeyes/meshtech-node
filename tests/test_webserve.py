@@ -157,6 +157,13 @@ async def test_refresh_in_reply_to_tagged(bench_pair):
         async with WSClient(url) as ws:
             await ws.recv()   # hello
             await ws.recv()   # state
+            # The connect-time PULSE (Brett 2026-09-21) arrives right
+            # after the state message - it answers no request, so it
+            # carries in_reply_to=None. Skip it; it is not part of the
+            # refresh burst this test pins.
+            first = await ws.recv(timeout=10)
+            if first["type"] == "packet" and first.get("kind") == "pulse":
+                pass          # the connect pulse - expected, skipped
             req_id = "test-req-1"
             await ws.send({"type": "refresh", "req_id": req_id,
                            "kind": "layout"})
@@ -171,6 +178,9 @@ async def test_refresh_in_reply_to_tagged(bench_pair):
                     assert msg["req_id"] == req_id
                     saw_ack = True
                 elif msg["type"] == "packet":
+                    if msg.get("kind") == "pulse" and \
+                            msg.get("in_reply_to") is None:
+                        continue   # cadence/connect pulse, not the answer
                     assert msg["in_reply_to"] == req_id
                     tagged += 1
                     if tagged >= 2 and saw_ack:

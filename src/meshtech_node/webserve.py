@@ -131,12 +131,18 @@ class WebServe:
     def __init__(self, host: str, port: int, *,
                  token: Optional[str] = None,
                  on_refresh: Optional[Callable[[object, str], None]] = None,
+                 on_client_connected: Optional[Callable[[str], None]] = None,
                  feed_info: Optional[dict] = None,
                  state_provider: Optional[Callable[[], dict]] = None):
         self.host = host
         self.port = port
         self.auth = _Auth(token) if token else None
         self.on_refresh = on_refresh
+        # Fired (awaited) right after hello+state reach a NEW client:
+        # the brain answers with a fresh PULSE so the app's Feed-health
+        # card fills immediately instead of waiting up to one full
+        # pulse cadence (Brett, 2026-09-21: "not waiting 5 minutes").
+        self.on_client_connected = on_client_connected
         self.feed_info = feed_info or {}
         self.map_budget = _GlobalRefreshBudget()
         # state_provider = the brain's honest state snapshot (listener
@@ -312,6 +318,16 @@ class WebServe:
             # bench helper: initial state immediately
             await ws.send_str(json.dumps(self._state_msg(),
                                          separators=(",", ":")))
+            # A NEW client gets its PULSE now, not at the next cadence
+            # tick: the brain builds one and the tap delivers it on
+            # this very socket. Never let a brain failure kill the
+            # connection (the pulse cadence will catch up anyway).
+            if self.on_client_connected is not None:
+                try:
+                    await self.on_client_connected()
+                except Exception:
+                    log.exception("connect-pulse failed - client stays "
+                                  "connected (cadence will catch up)")
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     try:
