@@ -27,11 +27,24 @@ APPDIR=/opt/meshtech-node
 
 # ---------------------------------------------------------------- ui --
 HAVE_WHIP=0
-command -v whiptail >/dev/null 2>&1 && HAVE_WHIP=1
+WHIP=""
+command -v whiptail >/dev/null 2>&1 && { HAVE_WHIP=1; WHIP=whiptail; }
 # MENU_PROMPT: the line a menu shows above its options. The datadoor
 # screen sets it to the door state + current password (Brett 2026-09-21:
 # state and password ALWAYS visible at the top, never a text dump).
 MENU_PROMPT="Choose:"
+# HAVE_CRWRAP: whiptail's --cr-wrap is what lets the Data Door screen
+# show its multi-line header. Old whiptails REJECT the flag entirely
+# (killing every menu at once - the "configure does nothing" bug), so
+# we probe once and only pass the flag when the binary accepts it.
+HAVE_CRWRAP=0
+if [[ $HAVE_WHIP -eq 1 ]]; then
+  if whiptail --cr-wrap --msgbox probe 4 20 >/dev/null 2>&1 </dev/null; then
+    HAVE_CRWRAP=1
+  fi
+fi
+CRWRAP_FLAG=""
+[[ $HAVE_CRWRAP -eq 1 ]] && CRWRAP_FLAG="--cr-wrap"
 
 # msg <title> <text>            (info box / plain echo)
 msg() {
@@ -47,12 +60,12 @@ msg() {
 menu() {
   local title="$1"; shift
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    # --cr-wrap: honor the newlines a caller embeds in the prompt text
-    # (the Data Door screen's multi-line state+password header relies
-    # on it - without this flag whiptail eats every line after the
-    # first, which is exactly the "never showed the password" bug).
-    whiptail --cr-wrap --title "$title" --menu "${MENU_PROMPT:-Choose:}" 24 78 16 "$@" \
-      3>&1 1>&2 2>&3
+    # --cr-wrap (when supported): honor the newlines a caller embeds in
+    # the prompt text - the Data Door screen's multi-line header relies
+    # on it. Never let a whiptail failure kill the whole script: a
+    # nonzero exit just means "no choice"; the loop re-renders.
+    "$WHIP" $CRWRAP_FLAG --title "$title" --menu "${MENU_PROMPT:-Choose:}" 20 78 16 "$@" \
+      3>&1 1>&2 2>&3 || true
   else
     local i=1 tags=() labels=()
     while [[ $# -ge 2 ]]; do tags+=("$1"); labels+=("$2"); shift 2; done
