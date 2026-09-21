@@ -47,7 +47,11 @@ msg() {
 menu() {
   local title="$1"; shift
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    whiptail --title "$title" --menu "${MENU_PROMPT:-Choose:}" 24 78 16 "$@" \
+    # --cr-wrap: honor the newlines a caller embeds in the prompt text
+    # (the Data Door screen's multi-line state+password header relies
+    # on it - without this flag whiptail eats every line after the
+    # first, which is exactly the "never showed the password" bug).
+    whiptail --cr-wrap --title "$title" --menu "${MENU_PROMPT:-Choose:}" 24 78 16 "$@" \
       3>&1 1>&2 2>&3
   else
     local i=1 tags=() labels=()
@@ -340,7 +344,7 @@ do_configure() {
 Password: $shown_pw"
           local act
           act=$(menu "Data Door" \
-            "open"   "Open door - generate a new password" \
+            "open"   "Open door - generate a new password (then it shows above)" \
             "close"  "Close door - revoke the password" \
             "back"   "Return to menu")
           case "$act" in
