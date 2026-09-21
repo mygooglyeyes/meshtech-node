@@ -278,8 +278,19 @@ class WebServe:
             if not candidate or not self.auth.check(candidate, peer):
                 log.info("WS auth refused for %s", peer)
                 return web.Response(status=401, text="unauthorized")
+            # Chrome closes the socket unless the server SELECTS one of
+            # the client's offered subprotocols (RFC 6455). aiohttp only
+            # echoes when the protocol is listed here. Browsers send
+            # exactly one: bearer.<token>. Non-browsers send none.
+            offered = [p.strip() for p in
+                       request.headers.get("Sec-WebSocket-Protocol",
+                                           "").split(",") if p.strip()]
+            selected = [p for p in offered if p.startswith("bearer.")]
+        else:
+            selected = []
         ws = web.WebSocketResponse(heartbeat=SILENCE_TIMEOUT_S,
-                                   max_msg_size=64 * 1024)
+                                   max_msg_size=64 * 1024,
+                                   protocols=selected)
         await ws.prepare(request)
         self.clients.add(ws)
         # S2: stable per-CONNECTION client identity for the brain's rate

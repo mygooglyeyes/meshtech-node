@@ -60,6 +60,10 @@ async def test_subprotocol_token_accepted():
         session, ws = await _open(url, protocols=["bearer.s3cret"])
         hello = await _recv_hello(ws)
         assert hello["type"] == "hello"
+        # Chrome closes the socket unless the server SELECTS the offered
+        # protocol (RFC 6455) - the raw-socket proof that caught this on
+        # the live box 2026-09-21 (101 but no Sec-WebSocket-Protocol).
+        assert ws.protocol == "bearer.s3cret"
         await ws.close()
         await session.close()
     finally:

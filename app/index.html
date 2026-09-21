@@ -4,7 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0e1116" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <!-- connect-src ws: - SELF-CONTAINED RULE (PROJECT.md 2026-09-21):
+       direct mode's feed link replaces the companion-radio link, so the
+       page connects to the HOST NODE's ws:// address, not its own origin.
+       Only ws:// is opened to the network; scripts/styles/forms stay self. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>MeshTech Scope</title>
   <link rel="manifest" href="./manifest.webmanifest" />
 </head>
