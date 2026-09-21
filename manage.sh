@@ -248,6 +248,15 @@ do_install() {
   echo "for its #scope channel. They must match or the radios will not"
   echo "understand each other."
   echo
+  # Brett 2026-09-21: the summary must be READ before any popup covers
+  # it - hold for Enter FIRST, ask about starting AFTER. (The old order
+  # fired the yesno box straight after the questions, burying every
+  # fact above it.)
+  echo "-- Install summary -------------------------------------------------"
+  echo "Program copied to $APPDIR; this folder stays your git source"
+  echo "(updates: git pull, then sudo ./manage.sh install again)."
+  echo "Transmit is OFF - starting the service turns on listening only."
+  pause
   if yesno "Start the meshtech-node service now"; then
     systemctl start "$SERVICE"
     sleep 2
@@ -258,11 +267,7 @@ do_install() {
     echo "Not started. When you are ready:  sudo ./manage.sh start"
   fi
   echo
-  echo "Install complete. The program runs from $APPDIR;"
-  echo "this folder stays as your git source (updates: git pull, then"
-  echo "sudo ./manage.sh install again, then restart)."
-  # Brett 2026-09-21: this summary used to scroll off instantly when
-  # the menu redrew - unreadable. Hold it until Enter is pressed.
+  echo "Install complete."
   pause
 }
 
