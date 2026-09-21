@@ -77,7 +77,11 @@ class FeedBuilder:
         self._last_pulse = 0.0
         self._last_layout = 0.0
         self._last_beacon = 0.0
-        self._background_section = 0
+        # v1.2 RENUMBERING (2026-09-21): squares are 1..9 and 0 is
+        # RESERVED (whole-area) - the encoder refuses 0. Seed at 1 and
+        # rotate 1..9 only. The 0 seed here was the silent feed-killer:
+        # the first cadence pulse raised CodecError inside the loop.
+        self._background_section = 1
         self._intro_cursor = 0
 
     def _next_seq(self) -> int:

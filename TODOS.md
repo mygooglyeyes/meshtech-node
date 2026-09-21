@@ -1,5 +1,18 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## ACTIVE BUG - feed dies after first PULSE (found+reproduced 2026-09-21 16:20)
+Root cause, proven in my sandbox: the background-summary counter
+(`_background_section`) starts at 0, but the v1.2 renumbering made 0
+RESERVED (whole-area, never a square) and the encoder now refuses 0.
+So the FIRST cadence pulse (5 min after every service start) raises
+CodecError inside the broadcast loop, which has no seatbelt - the loop
+dies silently and the feed goes quiet forever: no more pulses,
+layouts, or summaries, while the app stays connected looking healthy.
+Matches hilltop exactly: burst OK at 16:13:58, then cadence silence,
+though the separate connect-pulse path (16:19:17) still worked.
+FIX: seed the counter at 1 and rotate 1..9, plus wrap the loop tick so
+one bad packet can never kill the feed again.
+
 ## Menu restart/stop/start feel hung (Brett hit, 2026-09-21)
 
 Choosing restart (and start/stop) shows NOTHING while systemctl works

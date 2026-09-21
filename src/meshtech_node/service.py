@@ -532,51 +532,62 @@ class ScopeService:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            if not self._startup_seeded:
+            # SEATBELT (2026-09-21): the whole tick runs guarded. A
+            # single bad packet (or any builder error) used to raise
+            # straight out of the loop and kill the feed SILENTLY - the
+            # app stayed connected while pulses/layouts/summaries all
+            # stopped (the 16:13 section-0 feed-killer). Now: the error
+            # is logged loudly and the cadence continues.
+            try:
+                if not self._startup_seeded:
+                    now = time.time()
+                    self.builder._last_layout = now
+                    self.builder._last_beacon = now
+                    self.builder._last_pulse = now
+                    self._startup_seeded = True
+                    log.info("Companion link ready - feed cadence starts now "
+                             "(first PULSE in ~%ds)", feed.pulse_interval_seconds)
+                    # NODE (FEEDBUILDER-CHANGES #1): the first LAYOUT goes
+                    # out AT link-ready, not a full interval later. The
+                    # direct-mode app's map draws the moment it connects,
+                    # and a restarted node repaints stale client maps in
+                    # seconds instead of an hour.
+                    pkt = self.builder.build_layout()
+                    await self._send_burst([pkt], gap=0.0)
                 now = time.time()
-                self.builder._last_layout = now
-                self.builder._last_beacon = now
-                self.builder._last_pulse = now
-                self._startup_seeded = True
-                log.info("Companion link ready - feed cadence starts now "
-                         "(first PULSE in ~%ds)", feed.pulse_interval_seconds)
-                # NODE (FEEDBUILDER-CHANGES #1): the first LAYOUT goes
-                # out AT link-ready, not a full interval later. The
-                # direct-mode app's map draws the moment it connects,
-                # and a restarted node repaints stale client maps in
-                # seconds instead of an hour.
-                pkt = self.builder.build_layout()
-                await self._send_burst([pkt], gap=0.0)
-            now = time.time()
-            if now - self.builder._last_layout >= feed.layout_interval_seconds:
-                # C3: prune the node table on the layout cadence (rare):
-                # 14d silent -> stale (off maps), 30d -> forgotten.
-                counts = self.store.prune_nodes(now=now)
-                if counts["stale"] or counts["forgotten"]:
-                    log.info("node table pruned: %d stale, %d forgotten "
-                             "(table: %d nodes)", counts["stale"],
-                             counts["forgotten"],
-                             self.store.active_nodes_ever())
-                pkt = self.builder.build_layout()
-                await self._send_burst([pkt], gap=0.0)
-                self.builder._last_layout = now
-                self.builder._last_beacon = now
-            elif feed.multi_host and \
-                    now - self.builder._last_beacon >= feed.layout_beacon_seconds:
-                # Discovery beacon: an identical LAYOUT, sent on the short
-                # multi-host cadence so peers keep us alive between the
-                # hourly full LAYOUTs. Costs one ~30 B packet per beacon.
-                pkt = self.builder.build_layout()
-                await self._send_burst([pkt], gap=0.0)
-                self.builder._last_beacon = now
-                log.debug("Discovery beacon sent (origin %04x)", self.origin)
-            if now - self.builder._last_pulse >= feed.pulse_interval_seconds:
-                pulse = self.build_pulse_now()
-                sect = self.builder.build_sect_sum(self.builder._background_section)
-                self.builder._background_section = \
-                    (self.builder._background_section + 1) % self.geometry.section_count
-                await self._send_burst([pulse, sect], gap=feed.burst_gap_seconds)
-                self.builder._last_pulse = now
+                if now - self.builder._last_layout >= feed.layout_interval_seconds:
+                    # C3: prune the node table on the layout cadence (rare):
+                    # 14d silent -> stale (off maps), 30d -> forgotten.
+                    counts = self.store.prune_nodes(now=now)
+                    if counts["stale"] or counts["forgotten"]:
+                        log.info("node table pruned: %d stale, %d forgotten "
+                                 "(table: %d nodes)", counts["stale"],
+                                 counts["forgotten"],
+                                 self.store.active_nodes_ever())
+                    pkt = self.builder.build_layout()
+                    await self._send_burst([pkt], gap=0.0)
+                    self.builder._last_layout = now
+                    self.builder._last_beacon = now
+                elif feed.multi_host and \
+                        now - self.builder._last_beacon >= feed.layout_beacon_seconds:
+                    # Discovery beacon: an identical LAYOUT, sent on the short
+                    # multi-host cadence so peers keep us alive between the
+                    # hourly full LAYOUTs. Costs one ~30 B packet per beacon.
+                    pkt = self.builder.build_layout()
+                    await self._send_burst([pkt], gap=0.0)
+                    self.builder._last_beacon = now
+                    log.debug("Discovery beacon sent (origin %04x)", self.origin)
+                if now - self.builder._last_pulse >= feed.pulse_interval_seconds:
+                    pulse = self.build_pulse_now()
+                    sect = self.builder.build_sect_sum(self.builder._background_section)
+                    self.builder._background_section = \
+                        (self.builder._background_section %
+                         self.geometry.section_count) + 1  # rotate 1..9, never 0
+                    await self._send_burst([pulse, sect], gap=feed.burst_gap_seconds)
+                    self.builder._last_pulse = now
+            except Exception:
+                log.exception("broadcast tick FAILED - the feed keeps "
+                              "running (seatbelt), next tick in 5s")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=5.0)
             except asyncio.TimeoutError:
