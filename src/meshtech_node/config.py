@@ -92,6 +92,14 @@ class FeedCfg:
     # 24 h default keeps a slow-advertising mesh visible without
     # publishing long-silent nodes as active.
     advert_fresh_seconds: float = 86400.0
+    # COMPANION MODE (Brett 2026-09-20 - the phone-app simulation): the
+    # node runs as a separate DEVICE that only LISTENS to another
+    # node's radio server over TCP (like a companion radio's antenna)
+    # and builds its map from what it hears. It never transmits and
+    # never answers refreshes on-air or over its web socket - there is
+    # no host feed here; the feed cadence is parked. The template is
+    # deploy/config.companion.json; hilltop's copy stays the host.
+    companion_mode: bool = False
 
 
 @dataclass
@@ -304,6 +312,7 @@ def load(config_path: str) -> Settings:
                                               86400.0, errors,
                                               "feed.advert_fresh_seconds")),
         tx_enabled=bool(feed_raw.get("tx_enabled", False)),
+        companion_mode=bool(feed_raw.get("companion_mode", False)),
     )
 
     radio_raw = _dict(raw, "radio")

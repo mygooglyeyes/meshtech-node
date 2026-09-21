@@ -59,8 +59,15 @@ class ModemTransport:
     async def start(self) -> None:
         """Bring the modem link up; fail LOUDLY if it does not (the
         bot's v0.0.160 lesson: a failed init must tear its client down,
-        never leave a retrying zombie fighting over the slot)."""
+        never leave a retrying zombie fighting over the slot).
+
+        REUSABLE (companion mode, 2026-09-20): a failed start must not
+        poison the next attempt - the closed flag resets and any stale
+        stop-sentinel drains before a fresh client is created."""
         from cleanmodem.client import ModemClient  # noqa: PLC0415
+        self._closed = False
+        while not self._queue.empty():
+            self._queue.get_nowait()
         client = ModemClient(self.host, self.port, self.token,
                              self._on_rx)
         self._client = client
@@ -123,6 +130,14 @@ class ModemTransport:
         client = self._client
         return bool(client is not None and getattr(client, "connected",
                                                    False))
+
+    @property
+    def alive(self) -> bool:
+        """True while the client task is running (it reconnects on its
+        own) - the companion link's monitor restarts the transport ONLY
+        when this is False, never against a live retrying client."""
+        task = self._task
+        return task is not None and not task.done()
 
 
 async def wait_connected(modem: ModemTransport,

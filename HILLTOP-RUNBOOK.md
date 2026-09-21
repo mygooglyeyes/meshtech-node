@@ -153,6 +153,30 @@ byte moved from 0x02 to 0x03 at the same time; packets from either
 era are decode-able but the numbering convention differs - compare
 old and new logs with that in mind.
 
+## COMPANION DEVICES (the phone-app simulation, 2026-09-20)
+
+Another machine (your PC, later a phone) can run this SAME program as
+a listen-only LISTENER of hilltop's radio: it connects to hilltop's
+radio server over the network as an OBSERVER (transmit refused
+server-side), hears every frame hilltop's radio hears, decodes #scope
+itself, and builds its own map. This is the true stand-in for the
+future phone + companion radio: the data path is the air, not a
+screen-share.
+
+To turn it ON (hilltop side): `sudo ./manage.sh` -> configure ->
+"companions". That creates a one-time observer token, opens the radio
+server to the LAN, and prints the PC setup steps. To turn it OFF: the
+same menu entry revokes the token and closes the LAN bind.
+
+On the companion PC: clone the repo, `pip install -e . aiohttp
+pycryptodome`, copy `deploy/config.companion.json` to `config.json`,
+set `companion_host` to hilltop's IP, save the token as
+`companion.token`, then run `deploy/start-companion.cmd`. Its web app
+opens at http://127.0.0.1:8710/ - the map fills as #scope packets are
+HEARD. Its feed cadence is parked (no pulses of its own, TX
+impossible) and the refresh button answers "listen-only companion
+device" - that is the design, not a fault.
+
 ## WEB APP REFRESH LIMITS (what users will see)
 
 The map refresh button is rationed to protect airtime (S2, 2026-09-20):

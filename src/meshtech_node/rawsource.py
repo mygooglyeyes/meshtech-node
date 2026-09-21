@@ -89,6 +89,12 @@ class RawPacketSource:
     channels: List[ChannelKeys] = field(default_factory=list)
     dedupe: Optional[FloodDedupe] = None
     on_scope: Optional[ScopeCallback] = None
+    # COMPANION MODE bridge (2026-09-20): every heard #scope plaintext
+    # (data_type, plaintext, rx) offered AFTER the 0x53 type guard -
+    # the tap that carries heard packets to the app. Independent of
+    # decode_any: our decoder failing must never hide a packet the
+    # app's own decoder could read (no silent gaps).
+    on_heard: Optional[Callable[[int, bytes, RxPacket], None]] = None
     stats: SourceStats = field(default_factory=SourceStats)
     # FULL header of the last scope packet heard - the bench proof that
     # nothing was stripped (BENCH-CHECKLIST full-header check).
@@ -173,6 +179,11 @@ class RawPacketSource:
             log.debug("#scope plaintext type %04x is not scope traffic - "
                       "dropped", data_type)
             return
+        if self.on_heard is not None:
+            try:
+                self.on_heard(data_type, plaintext, rx)
+            except Exception:
+                log.exception("on_heard bridge raised - listener continues")
         self.last_scope_frame = frame
         try:
             obj = codec.decode_any(plaintext)

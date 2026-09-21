@@ -199,6 +199,15 @@ class ScopeService:
 
     async def _handle_refresh(self, req: codec.RefreshReq,
                               sender_prefix: str) -> None:
+        # COMPANION MODE: a companion never answers refreshes - not on
+        # the air (it has no TX mandate) and not for its own web app
+        # (there is no host data to build). Heard packets fill the map;
+        # the app's refresh button gets an honest listen_only refusal
+        # instead of a silent no-op.
+        if self.settings.feed.companion_mode:
+            log.info("COMPANION MODE: refresh (kind=%d target=%d) "
+                     "refused - listen-only device", req.kind, req.target)
+            return
         if req.host not in (0, self.origin):
             log.debug("Refresh targeted at host %04x, not us", req.host)
             return
@@ -468,8 +477,19 @@ class ScopeService:
         and every early TX would otherwise be dropped locally. Timers are
         seeded on link-up so the first PULSE goes out one full interval
         later, not the moment the link opens.
+
+        COMPANION MODE (2026-09-20): parked entirely. A companion device
+        has no host feed - its map comes from what it HEARS. Parked
+        before the first seed tick, so nothing is ever built, budgeted,
+        or (if TX were ever misconfigured on) sent.
         """
         feed = self.settings.feed
+        if feed.companion_mode:
+            log.info("COMPANION MODE: host feed parked - the map builds "
+                     "from heard packets only. No pulses, no layout, "
+                     "no on-air TX (there is nothing of ours to send).")
+            await asyncio.Event().wait()      # parks until cancelled
+            return
         while not self._stop.is_set():
             if not (self.client.is_connected and self.client.has_slot):
                 if self._startup_seeded:

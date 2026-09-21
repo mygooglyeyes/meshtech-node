@@ -80,6 +80,7 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
         settings.webserve.host, settings.webserve.port,
         token=_token(settings),
         feed_info={"tx_enabled": settings.feed.tx_enabled,
+                   "companion_mode": settings.feed.companion_mode,
                    "feed": {"channel": settings.channel.name,
                             "bench_no_radio": bench_no_radio}},
         state_provider=lambda: _state_snapshot(brain, source),
@@ -88,6 +89,18 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     source.on_scope = brain.on_packet   # RX shim: heard #scope -> brain
     brain.feed_tap = serve         # FeedTap: every built packet -> WS
     brain.bench_no_radio = bench_no_radio
+    if settings.feed.companion_mode:
+        # COMPANION MODE: the app is fed by what the companion HEARS.
+        # Hilltop's layout/sections/pulse arrive over the air (or via
+        # the TCP observer feed); the tap serves them with the SAME
+        # packet message shape, snr from the real radio hop when the
+        # modem reports one (None stays None - honesty rule).
+        def _tap_heard(data_type: int, plaintext: bytes,
+                       rx: object) -> None:
+            serve.on_heard_packet(
+                data_type, plaintext,
+                snr=getattr(rx, "snr", None))
+        source.on_heard = _tap_heard
     return source, sender, brain, serve
 
 
@@ -217,6 +230,14 @@ async def _main(argv: Optional[list] = None) -> int:
     await site.start()
     log.info("WebServe listening on %s:%d/feed (direct mode ready)",
              serve.host, serve.port)
+    if settings.feed.companion_mode:
+        log.info("=" * 62)
+        log.info("COMPANION DEVICE: listening to %s:%s - the map builds "
+                 "from heard packets. Host feed parked, TX impossible, "
+                 "refreshes refused (listen_only). This is the phone-app "
+                 "simulation.", settings.companion_host,
+                 settings.companion_port)
+        log.info("=" * 62)
     if bench:
         log.info("=" * 62)
         log.info("BENCH: TX DISABLED - listen-only direct-mode feed. "
@@ -239,15 +260,24 @@ async def _main(argv: Optional[list] = None) -> int:
     if modem is not None:
         # Real mode: bring the modem link up BEFORE the brain's cadence
         # seeds (a link that dies at startup must be loud, not silent).
-        try:
-            await modem.start()
+        # COMPANION MODE: the link IS the device's whole purpose (the
+        # PC has no radio) - a hilltop reboot must never leave it deaf
+        # until a human restarts. The client retries forever on its
+        # own; the transport's one-shot start is replaced here by a
+        # patient start loop that outlives the outage.
+        if settings.feed.companion_mode:
             tasks.insert(0, asyncio.create_task(
-                _watch_modem(modem, stop), name="modem-watch"))
-            log.info("RADIO LINK UP - the node is listening (TX off, "
-                     "listen-only). Feed and app get real RX.")
-        except Exception as exc:
-            log.error("Modem link FAILED: %s - the node runs WITHOUT "
-                      "the radio (honest gap; WebServe still serves)", exc)
+                _companion_link(modem, stop), name="companion-link"))
+        else:
+            try:
+                await modem.start()
+                tasks.insert(0, asyncio.create_task(
+                    _watch_modem(modem, stop), name="modem-watch"))
+                log.info("RADIO LINK UP - the node is listening (TX off, "
+                         "listen-only). Feed and app get real RX.")
+            except Exception as exc:
+                log.error("Modem link FAILED: %s - the node runs WITHOUT "
+                          "the radio (honest gap; WebServe still serves)", exc)
     try:
         done, _pending = await asyncio.wait(
             tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -274,6 +304,48 @@ async def _main(argv: Optional[list] = None) -> int:
 
 def _is_loopback(host: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
+
+
+async def _companion_link(modem, stop: asyncio.Event) -> None:
+    """COMPANION MODE's patient link.
+
+    Layered retries, each with its own job:
+    - ModemClient.run() retries the TCP session forever (its own loop)
+      - that covers hilltop reboots and network blips.
+    - the transport task dying (only possible while start() was still
+      waiting, or a fatal client crash) is covered HERE: the monitor
+      restarts the transport with backoff. `alive` guards the race -
+      we never start a second client against a live retrying one.
+    The log carries every transition, loud (answerbot rule)."""
+    delay = 2.0
+    announced = False
+    while not stop.is_set():
+        if not modem.alive:
+            try:
+                await modem.start()
+                delay = 2.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("companion link not up yet (%s) - "
+                            "retry in %.0fs", exc, delay)
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
+                delay = min(delay * 2, 30.0)
+                continue
+        if modem.connected and not announced:
+            log.info("COMPANION LINK UP - hearing %s:%s; the app is fed "
+                     "from heard packets", modem.host, modem.port)
+            announced = True
+        elif not modem.connected and announced:
+            log.warning("companion link DOWN - the client is retrying")
+            announced = False
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _watch_modem(modem, stop: asyncio.Event) -> None:

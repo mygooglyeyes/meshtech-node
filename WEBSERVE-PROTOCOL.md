@@ -93,6 +93,10 @@ Client -> server:
                    = the global whole-map budget is spent; the app must
                    show the wait (never a silent no-op). Other refusals
                    name their reason; the app logs it verbatim.
+                   reason:"listen_only" = this node is a COMPANION
+                   device (feed.companion_mode): it has no host feed
+                   and never answers refreshes - heard packets are the
+                   map. Sent for ANY refresh, before the budget check.
 
 ## Backpressure and drops
 
@@ -133,6 +137,10 @@ Client -> server:
 - Whole-map refresh (`kind:"layout"`): GLOBAL 2 per 30 min, all
   connections combined. Refused with ack accepted:false,
   reason:"map_budget", retry_after_s = seconds until the next slot.
+- Companion-mode nodes refuse EVERY refresh (any kind/target) with
+  reason:"listen_only" before any budget logic - a companion builds
+  its map from heard packets only; there is no host data to answer
+  with. (2026-09-20, the phone-app simulation.)
 - Per-section refresh (`kind:"section"`): per-connection cooldown and
   hourly cap only (the brain's limiter via the connection's stable
   conn_id). Cheap, browsing-friendly, never blocked by other users.

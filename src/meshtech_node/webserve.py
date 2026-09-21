@@ -191,6 +191,32 @@ class WebServe:
         except Exception:
             self.clients.discard(ws)
 
+    def on_heard_packet(self, data_type: int, plaintext: bytes, *,
+                        snr: Optional[float] = None) -> dict:
+        """COMPANION MODE tap: a #scope packet the companion HEARD
+        (decrypted by the listener from the radio's observer feed).
+        Same message shape as on_built_packet; would_tx/tx_ok are False
+        (we did not send it) and snr is the REAL radio hop when the
+        modem reported one - None stays None."""
+        self.seq += 1
+        msg = {
+            "type": "packet",
+            "seq": self.seq,
+            "ts_ms": int(time.time() * 1000),
+            "kind": KIND_BY_TYPE.get(data_type, f"0x{data_type:04x}"),
+            "wire": plaintext.hex(),
+            "would_tx": False,
+            "tx_ok": False,
+            "snr": snr,
+            "in_reply_to": None,
+        }
+        self.ring.append(msg)
+        if len(self.ring) > RING_CAPACITY:
+            self.ring.pop(0)
+        for ws in list(self.clients):
+            asyncio.ensure_future(self._send(ws, msg))
+        return msg
+
     # ----------------------------------------------------------- state ----
     def _state_msg(self) -> dict:
         snap = self.state_provider() if self.state_provider else {}
@@ -318,6 +344,16 @@ class WebServe:
             # (the map button has always sent kind=section target=0) -
             # so the GLOBAL budget keys on target==0, not on is_map.
             # Real squares (1..9) never draw the global budget.
+            # COMPANION MODE: refused BEFORE the budget - a listen-only
+            # device has no host data to answer with; heard packets are
+            # the map. The app gets the plain-words ack, never silence.
+            if self.feed_info.get("companion_mode", False):
+                log.info("refresh refused - companion mode (listen-only)")
+                await self._send(ws, {"type": "ack",
+                                      "req_id": req_id,
+                                      "accepted": False,
+                                      "reason": "listen_only"})
+                return
             if target == codec.REFRESH_WHOLE_AREA and \
                     not self.map_budget.allow():
                 wait = self.map_budget.retry_after_s()

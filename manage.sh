@@ -280,6 +280,7 @@ do_configure() {
       "preamble"   "preamble length            (cur: $(grep -E '^preamble_length *=' "$MC" | awk '{print $3}'))" \
       "power"      "TX power dBm (UNUSED while TX off)" \
       "txmode"     "radio TRANSMIT on/off      (cur: $(grep -oE '"tx_enabled": *[a-z]+' "$CJ" | grep -oE '[a-z]+$')) - RESTARTS the service" \
+      "companions" "let other devices LISTEN to this radio (PC/phone simulator)" \
       "webserve"   "web app port               (cur: $(grep -oE '"port": [0-9]+' "$CJ" | grep -oE '[0-9]+'))" \
       "back"       "save nothing and go back")
     case "$pick" in
@@ -317,6 +318,60 @@ do_configure() {
           pause
         else
           echo "unchanged."
+        fi ;;
+      companions)
+        # COMPANION DEVICES (Brett 2026-09-20, the phone-app
+        # simulation): other machines on the LAN connect as OBSERVERS
+        # (TX refused server-side - the cleanmodem role system IS the
+        # mandate) and receive every frame the radio hears. The token
+        # is the one secret a companion PC legitimately needs.
+        local OT="$APPDIR/secrets/observer.token"
+        if [[ -f "$OT" ]]; then
+          echo "Companion access is ON (an observer token exists)."
+          if yesno "REVOKE companion access (token deleted, LAN closed, restart)"; then
+            need_root companions
+            rm -f "$OT"
+            sed -i 's|^host *=.*|host = 127.0.0.1|' "$MC"
+            systemctl restart "$SERVICE"
+            sleep 2
+            systemctl --no-pager --lines 5 status "$SERVICE" || true
+            echo
+            echo "Companion access revoked - the radio server is loopback-only again."
+            pause
+          fi
+        else
+          echo "Turning ON companion access: other devices on your network may"
+          echo "LISTEN to the radio feed (observer role - transmit is refused"
+          echo "server-side). A one-time token is created; give it ONLY to"
+          echo "devices you trust."
+          if yesno "Create the observer token and open the radio to the LAN"; then
+            need_root companions
+            umask 077
+            python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$OT"
+            chmod 600 "$OT"
+            umask 022
+            sed -i 's|^host *=.*|host = 0.0.0.0|' "$MC"
+            sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/observer.token|" "$MC"
+            systemctl restart "$SERVICE"
+            sleep 2
+            systemctl --no-pager --lines 5 status "$SERVICE" || true
+            echo
+            echo "COMPANION TOKEN - shown this one time only:"
+            cat "$OT"
+            echo
+            local lanip
+            lanip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            echo "On the companion PC (Windows paths shown):"
+            echo "  1. git clone https://github.com/mygooglyeyes/meshtech-node"
+            echo "  2. cd meshtech-node && python -m venv .venv"
+            echo "  3. .venv\\Scripts\\pip install -e . aiohttp pycryptodome"
+            echo "  4. copy deploy\\config.companion.json config.json"
+            echo "  5. edit config.json: companion_host = ${lanip:-<hilltop IP>}"
+            echo "  6. put the token above in a file named companion.token"
+            echo "  7. start it: deploy\\start-companion.cmd"
+            echo "     -> the web app opens at http://127.0.0.1:8710/"
+            pause
+          fi
         fi ;;
       back) return ;;
     esac
