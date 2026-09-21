@@ -32,12 +32,12 @@ def test_pulse_roundtrip():
 # ---------------------------------------------------------------- SECT_SUM
 
 def test_sect_sum_roundtrip():
-    s = codec.SectSum(seq=1, section_id=4, active_nodes=7,
+    s = codec.SectSum(seq=1, section_id=5, active_nodes=7,
                       packet_count=1520, delay_p50_s=3, delay_p90_s=9,
                       origin=0xB17E, route_stubs=[0x1234, 0xABCD])
     raw = codec.encode_sect_sum(s)
     out = codec.decode_sect_sum(raw[3:])
-    assert out.section_id == 4
+    assert out.section_id == 5
     assert out.active_nodes == 7
     assert out.packet_count == 1520
     assert out.delay_p50_s == 3
@@ -217,7 +217,7 @@ def test_payload_budget_respected():
                  for i in range(4)]))
     assert len(intro) <= codec.TARGET_PAYLOAD
     route = codec.encode_route(codec.Route(
-        seq=0, section_id=0, route_id=0, packet_count=0, delay_med_s=0,
+        seq=0, section_id=1, route_id=0, packet_count=0, delay_med_s=0,
         last_heard_min=0, origin=0xB17E, prefixes=list(range(8))))
     assert len(route) <= codec.TARGET_PAYLOAD
 
@@ -248,17 +248,15 @@ def test_truncated_payloads_raise_not_crash():
 
 
 # ---------------------------------------------------------------- golden vectors
-# Regenerate with: python tools/gen_golden.py  (writes GOLDEN.md +
-# tests/golden_vectors.json; keep in sync with scope-app codec.test.ts)
+# Regenerate with: python tools/gen_golden.py (writes
+# tests/golden_vectors.json; keep in sync with scope-app codec.test.ts).
+# The test READS the json - one source of truth, no hand-copied drift.
 
-GOLDEN = {
-    "pulse": "0153170213017eb1d20404000900280009090305080200010406",
-    "sect_sum": "0253130204007eb100017e003000300300022102cdab",
-    "route": "0353120202007eb100efbe38000400110003112233",
-    "layout": "0553150203007eb10344d61200a01ce9ff409c0464656d6f",
-    "intro": "04531c0202007eb10211030748696c6c746f7024002400220105416c696365",
-    "refresh": "11530c020200420002efbe7eb13412",
-}
+import json as _json
+from pathlib import Path as _Path
+
+GOLDEN = _json.loads((_Path(__file__).parent / "golden_vectors.json")
+                     .read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("name", sorted(GOLDEN.keys()))

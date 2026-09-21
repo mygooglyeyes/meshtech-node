@@ -213,10 +213,12 @@ class ScopeService:
                       req.kind, req.target, req.nonce)
             return
         target = req.target
-        if req.kind == codec.REFRESH_KIND_SECTION and target != 0 and \
+        if target == codec.REFRESH_WHOLE_AREA:
+            pass  # whole-area (0, any kind): every host may answer;
+                  # dedupe/rate-limit still gate the burst
+        elif req.kind == codec.REFRESH_KIND_SECTION and \
                 not self._i_own(target):
-            return  # target 0 = whole-area: every host may answer
-                    # (dedupe/rate-limit still gate the burst)
+            return  # a real square: only its elected owner answers
         if req.kind == codec.REFRESH_KIND_ROUTE and \
                 self.settings.feed.multi_host and \
                 not self._route_mine(target):
@@ -234,7 +236,7 @@ class ScopeService:
 
     def _route_mine(self, route_id: int) -> bool:
         """Multi-host route check: any section I own contains this route."""
-        for sid in range(self.geometry.section_count):
+        for sid in range(1, self.geometry.section_count + 1):
             if not self._i_own(sid):
                 continue
             for path, _count, _delays, _last in \

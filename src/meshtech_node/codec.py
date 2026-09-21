@@ -13,7 +13,20 @@ import struct
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-PROTO_VERSION = 0x02   # v1.1: + origin in header, + refresh host target
+# v1.1 (0x02): + origin in header, + refresh host target.
+# v1.2 (0x03, 2026-09-20): SECTION IDS ARE 1-BASED on the wire
+# (1 = NW .. 9 = SE, matching what the app prints). 0 is RESERVED and
+# means "whole-area" in a REFRESH_REQ target; a SECT_SUM/ROUTE with
+# section_id 0 is malformed and rejected at decode. Header layout is
+# unchanged from v1.1 (version + seq + origin).
+PROTO_VERSION = 0x03
+
+# REFRESH_REQ target 0 = WHOLE-AREA refresh (any kind): the answer is
+# LAYOUT + one summary per section + node names. Section targets are
+# 1..grid*grid. Never a square: that is the whole point (Brett
+# 2026-09-20 - "section 0" in a log confused humans and it also meant
+# the wire could not say "the whole map" and "upper-left" apart).
+REFRESH_WHOLE_AREA = 0
 
 # data_type values (the 0x53 magic marks scope traffic)
 TYPE_PULSE = 0x5301
@@ -93,6 +106,11 @@ def unpack_header(payload: bytes, offset: int = 0) -> Tuple[Header, int]:
         # v1 packet: 3-byte header, no origin field.
         seq = struct.unpack_from("<H", payload, offset + 1)[0]
         return Header(version=version, seq=seq, origin=0), offset + 3
+    if version not in (0x02, 0x03):
+        # STRICT: an unknown version must not be silently read with the
+        # wrong field widths (0x01 = 3-byte, 0x02+ = 5-byte). A loud
+        # error beats a confident misread.
+        raise CodecError(f"unsupported protocol version 0x{version:02x}")
     if len(payload) < offset + 5:
         raise CodecError("payload too short for v1.1 header")
     seq, origin = struct.unpack_from("<HH", payload, offset + 1)
@@ -174,13 +192,25 @@ class SectSum:
     route_stubs: List[int] = field(default_factory=list)  # route_ids
 
 
+def _check_section_id(value: int, where: str) -> int:
+    """Wire section ids are 1-BASED (v1.2): 1..255 valid on the byte.
+
+    0 is reserved (whole-area marker in REFRESH_REQ targets); a
+    SECT_SUM/ROUTE carrying 0 is malformed - reject at the boundary
+    instead of drawing a phantom NW square."""
+    value = _u8(value, where)
+    if value == REFRESH_WHOLE_AREA:
+        raise CodecError(f"{where}: 0 is reserved (whole-area)")
+    return value
+
+
 def encode_sect_sum(s: SectSum) -> bytes:
     if len(s.route_stubs) > 255:
         raise CodecError("too many route stubs")
     body = pack_header(s.seq, s.origin)
     body += struct.pack(
         "<BBHHHBB",
-        _u8(s.section_id, "section_id"),
+        _check_section_id(s.section_id, "section_id"),
         _u8(s.active_nodes, "active_nodes"),
         _u16(s.packet_count, "packet_count"),
         _u16(s.delay_p50_s, "delay_p50_s"),
@@ -200,6 +230,7 @@ def decode_sect_sum(payload: bytes) -> SectSum:
     section_id, active, packets, p50, p90, _reserved, n = \
         struct.unpack_from("<BBHHHBB", payload, off)
     off += 10
+    _check_section_id(section_id, "decoded section_id")
     if len(payload) < off + 2 * n:
         raise CodecError("SECT_SUM stubs truncated")
     stubs = [struct.unpack_from("<H", payload, off + 2 * i)[0]
@@ -232,7 +263,7 @@ def encode_route(r: Route) -> bytes:
     body = pack_header(r.seq, r.origin)
     body += struct.pack(
         "<BHHHHB",
-        _u8(r.section_id, "section_id"),
+        _check_section_id(r.section_id, "section_id"),
         _u16(r.route_id, "route_id"),
         _u16(r.packet_count, "packet_count"),
         _u16(r.delay_med_s, "delay_med_s"),
@@ -250,6 +281,7 @@ def decode_route(payload: bytes) -> Route:
         raise CodecError("ROUTE too short")
     section_id, route_id, packets, delay, last, n = \
         struct.unpack_from("<BHHHHB", payload, off)
+    _check_section_id(section_id, "decoded section_id")
     off += 10
     if len(payload) < off + n:
         raise CodecError("ROUTE prefixes truncated")

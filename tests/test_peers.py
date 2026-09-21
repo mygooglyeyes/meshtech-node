@@ -49,7 +49,7 @@ def test_owner_is_lowest_origin_among_covering():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x30, self_geometry=geometry,
                            peers=peers)
-    for sid in range(9):
+    for sid in range(1, 10):
         assert owners.owner_of(sid) == 0x10   # lowest origin wins
 
 
@@ -61,7 +61,7 @@ def test_owner_prefers_self_on_tie():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x20, self_geometry=geometry,
                            peers=peers)
-    assert owners.owner_of(4) == 0x20       # equal origin = self, self wins
+    assert owners.owner_of(5) == 0x20       # equal origin = self, self wins
 
 
 def test_owner_partitions_non_overlapping_areas():
@@ -73,13 +73,13 @@ def test_owner_partitions_non_overlapping_areas():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x20, self_geometry=geometry,
                            peers=peers)
-    # sections 0,3,6 are the west column -> peer's area
-    assert owners.owner_of(0) == 0x10
-    assert owners.owner_of(3) == 0x10
-    assert owners.owner_of(6) == 0x10
+    # sections 1,4,7 are the west column (v1.2 1-based) -> peer's area
+    assert owners.owner_of(1) == 0x10
+    assert owners.owner_of(4) == 0x10
+    assert owners.owner_of(7) == 0x10
     # east column -> self
-    assert owners.owner_of(2) == 0x20
-    assert owners.owner_of(8) == 0x20
+    assert owners.owner_of(3) == 0x20
+    assert owners.owner_of(9) == 0x20
 
 
 def test_far_peer_cannot_steal_own_grid():
@@ -93,7 +93,7 @@ def test_far_peer_cannot_steal_own_grid():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x30, self_geometry=geometry,
                            peers=peers)
-    assert owners.owner_of(4) == 0x30
+    assert owners.owner_of(5) == 0x30
 
 
 def test_overlapping_edge_sections_elect_lowest():
@@ -106,12 +106,12 @@ def test_overlapping_edge_sections_elect_lowest():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x30, self_geometry=geometry,
                            peers=peers)
-    # east column is outside the peer's square -> self only
-    assert owners.owner_of(2) == 0x30
-    assert owners.owner_of(5) == 0x30
-    assert owners.owner_of(8) == 0x30
+    # east column is outside the peer's square -> self only (v1.2)
+    assert owners.owner_of(3) == 0x30
+    assert owners.owner_of(6) == 0x30
+    assert owners.owner_of(9) == 0x30
     # west column centre is inside both squares -> peer wins (lower id)
-    assert owners.owner_of(0) == 0x10
+    assert owners.owner_of(1) == 0x10
 
 
 def test_stale_peer_loses_ownership():
@@ -122,8 +122,8 @@ def test_stale_peer_loses_ownership():
                             span_m=40000)
     owners = SectionOwners(self_origin=0x30, self_geometry=geometry,
                            peers=peers)
-    assert owners.owner_of(4) == 0x10          # peer owns it while fresh
-    assert owners.owner_of(4, now=now + 200.0) == 0x30  # stale -> self takes over
+    assert owners.owner_of(5) == 0x10          # peer owns it while fresh
+    assert owners.owner_of(5, now=now + 200.0) == 0x30  # stale -> self takes over
 
 
 # ---------------------------------------------------------------- service
@@ -152,7 +152,7 @@ def test_service_answers_single_host():
     radio = FakeRadio()
     svc = make_service(multi_host=False)
     svc.client = radio
-    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=4,
+    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=5,
                            nonce=1)
     import asyncio
     asyncio.run(svc.on_packet(req, "aabbccddeeff"))
@@ -165,7 +165,7 @@ def test_multi_host_owner_answers():
     svc.client = radio
     # a peer with a HIGHER origin also covering the area
     svc.peers.observe_layout(make_layout(0x20, 37.0, -122.0))
-    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=4,
+    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=5,
                            nonce=1)
     import asyncio
     asyncio.run(svc.on_packet(req, "aabbccddeeff"))
@@ -178,7 +178,7 @@ def test_multi_host_non_owner_stays_silent():
     svc.client = radio
     # a peer with a LOWER origin covering the same area
     svc.peers.observe_layout(make_layout(0x10, 37.0, -122.0))
-    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=4,
+    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=5,
                            nonce=1)
     import asyncio
     asyncio.run(svc.on_packet(req, "aabbccddeeff"))
@@ -192,7 +192,7 @@ def test_multi_host_no_peers_still_answers():
     svc = make_service(multi_host=True, origin=0x30)
     svc.client = radio
     assert svc.peers.count() == 0
-    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=4,
+    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=5,
                            nonce=1)
     import asyncio
     asyncio.run(svc.on_packet(req, "aabbccddeeff"))
@@ -203,7 +203,7 @@ def test_directed_refresh_other_host_silence():
     radio = FakeRadio()
     svc = make_service(multi_host=False, origin=0x30)
     svc.client = radio
-    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=4,
+    req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION, target=5,
                            nonce=1, host=0x99)
     import asyncio
     asyncio.run(svc.on_packet(req, "aabbccddeeff"))

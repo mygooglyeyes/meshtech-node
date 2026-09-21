@@ -1,7 +1,12 @@
 """Section geometry - a grid x grid tiling of the square area.
 
-Sections are numbered ROW-MAJOR FROM THE NORTH-WEST CORNER
-(0 = NW, grid-1 = NE, grid*grid-1 = SE). Both host and client derive
+Sections are numbered ROW-MAJOR FROM THE NORTH-WEST CORNER, and since
+PROTOCOL v1.2 the numbering is 1-BASED EVERYWHERE (wire, logs, UI):
+1 = NW, grid = NE, grid*grid = SE. Id 0 is RESERVED (whole-area marker
+in refresh targets) and never a square - the old 0-based wire ids put
+"section 0" in logs while screens showed "Section 1", which confused
+humans (Brett 2026-09-20) and made "whole map" and "upper-left"
+impossible to say apart on the wire. Both host and client derive
 geometry from the LAYOUT alone - section corners never travel on the
 wire. Mirrors scope-app/src/lib/grid.ts exactly.
 """
@@ -58,10 +63,10 @@ class GridGeometry:
         return self.grid * self.grid
 
     def section(self, section_id: int) -> Section:
-        """Geometry for one section id (row-major from NW)."""
-        if not 0 <= section_id < self.section_count:
+        """Geometry for one section id (row-major from NW, 1-based)."""
+        if not 1 <= section_id <= self.section_count:
             raise ValueError(f"section_id out of range: {section_id}")
-        row, col = divmod(section_id, self.grid)
+        row, col = divmod(section_id - 1, self.grid)
         width = self.span_deg / self.grid
         north = self.north - row * width
         south = north - width
@@ -72,7 +77,9 @@ class GridGeometry:
         )
 
     def section_for(self, lat: float, lon: float) -> int:
-        """Section id containing a position, or -1 when outside the area."""
+        """1-based section id containing a position, or -1 outside the area.
+
+        -1 stays the honest "not on the map" answer (unchanged)."""
         if not (self.south <= lat <= self.north and self.west <= lon <= self.east):
             return -1
         width = self.span_deg / self.grid
@@ -80,7 +87,7 @@ class GridGeometry:
         row = int((self.north - lat) / width)
         col = min(col, self.grid - 1)
         row = min(row, self.grid - 1)
-        return row * self.grid + col
+        return row * self.grid + col + 1
 
 
 def geometry_from(center_lat: float, center_lon: float, span_m: float,

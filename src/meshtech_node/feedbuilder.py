@@ -159,7 +159,7 @@ class FeedBuilder:
         total_set = set()
         for obs in self.store.observations(now=now):
             total_set.add(obs.prefix)
-        for sid in range(self.geometry.section_count):
+        for sid in range(1, self.geometry.section_count + 1):
             active, _, _ = self._section_stats(sid, now=now)
             counts.append(min(active, 255))
         pulse = codec.Pulse(
@@ -297,25 +297,27 @@ class FeedBuilder:
                                now: Optional[float] = None) -> List[OutPacket]:
         """Packets answering one REFRESH_REQ (section or route).
 
-        target 0 = WHOLE-AREA refresh: LAYOUT (grid geometry so the
-        client can draw the map immediately) + one summary per section
-        + node names. 2026-09-18: target 0 fell through the section
-        range check as section 0, so a client's "Refresh map" could
-        never fetch the layout - the map waited up to an hour for the
-        hourly broadcast."""
+        PROTOCOL v1.2: section targets are 1-based (1 = NW .. 9 = SE)
+        and 0 = WHOLE-AREA refresh whatever the kind string: LAYOUT (grid
+        geometry so the client can draw the map immediately) + one
+        summary per section + node names. (History: target 0 once fell
+        through the section range check as section 0, so "Refresh map"
+        fetched only the NW square; 2026-09-18 made 0 mean whole-area;
+        2026-09-20 made the whole numbering 1-based so the wire, the
+        logs, and the screens all agree.)"""
         now = time.time() if now is None else now
         out: List[OutPacket] = []
         if kind == codec.REFRESH_KIND_SECTION:
-            if target == 0:
+            if target == codec.REFRESH_WHOLE_AREA:
                 out.append(self.build_layout(now=now))
-                for sid in range(self.geometry.section_count):
+                for sid in range(1, self.geometry.section_count + 1):
                     out.append(self.build_sect_sum(sid, now=now,
                                                    top_routes=[]))
                 pkt = self.build_intro_batch(now=now)
                 if pkt:
                     out.append(pkt)
                 return out
-            if not 0 <= target < self.geometry.section_count:
+            if not 1 <= target <= self.geometry.section_count:
                 return out
             out.append(self.build_sect_sum(target, now=now, top_routes=[]))
             routes = self._routes_for_section(target, now=now)
@@ -328,7 +330,7 @@ class FeedBuilder:
                 out.append(pkt)
         elif kind == codec.REFRESH_KIND_ROUTE:
             # target is a route_id; find its section+path
-            for sid in range(self.geometry.section_count):
+            for sid in range(1, self.geometry.section_count + 1):
                 for path, _count, _delays, _last in \
                         self._routes_for_section(sid, now=now):
                     if _route_id(path) == target:
@@ -355,7 +357,7 @@ class FeedBuilder:
         # minus their data_type framing (SNAP bodies concatenate raw).
         layout = self.build_layout(now=now)
         add(layout.payload[3:])
-        for sid in range(self.geometry.section_count):
+        for sid in range(1, self.geometry.section_count + 1):
             sect = self.build_sect_sum(sid, now=now)
             add(sect.payload[3:])
         intro = self.build_intro_batch(now=now)

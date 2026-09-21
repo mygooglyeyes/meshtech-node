@@ -61,19 +61,26 @@ Client -> server:
     resume   {type:"resume", after_seq:1200}    -> replay from ring
                  buffer (bounded, last 200 packets), then live
     refresh  {type:"refresh", req_id:"r7",
-              kind:"layout"|"section", section?:0-8}
+              kind:"map"|"layout"|"section", section?:0-9}
+                 - v1.2 SPELLING: the app's map button sends
+                   kind:"map" (the legacy "layout" spelling and
+                   "section" with section:0 still work - same thing).
+                 - section ids are 1-BASED (v1.2): 1 = NW .. 9 = SE,
+                   matching the numbers on screen; 0 = whole area.
                  - the brain answers exactly as if a REFRESH_REQ arrived
                    on air (same rate limiter, same dedupe - no bypass);
                    answers come back as `packet` with `in_reply_to`.
                  - gives the app a no-radio refresh path at the bench;
                    the over-the-air refresh path keeps working too.
                  - REFRESH BUDGET (S2, Brett's design, 2026-09-20): a
-                   whole-map refresh (kind:"layout") draws from a
-                   GLOBAL budget of 2 per 30 minutes across ALL
-                   connections (a browser can mint a fresh req_id per
-                   click, so per-client limits never throttle maps).
-                   Per-section refreshes do NOT touch the global budget
-                   - they stay on the per-connection cooldown/cap via
+                   WHOLE-AREA refresh (kind:"map", legacy "layout",
+                   or "section" with section 0 - they are all target 0
+                   on the wire) draws from a GLOBAL budget of 2 per
+                   30 minutes across ALL connections (a browser can
+                   mint a fresh req_id per click, so per-client limits
+                   never throttle maps). Per-section refreshes
+                   (section 1..9) do NOT touch the global budget -
+                   they stay on the per-connection cooldown/cap via
                    the connection's stable conn_id. On-air requests
                    never touch the global budget: the brain's own
                    limiter gates them as always.

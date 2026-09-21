@@ -66,7 +66,7 @@ def test_refresh_request_full_path():
                 "channel_name": None,
                 "delay_s": 1.5})())
         req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION,
-                               target=4, nonce=99)
+                               target=5, nonce=99)   # centre square (v1.2)
         await svc.on_packet(req, "aabbccddeeff")
         types = [t for t, _ in radio.sent]
         assert codec.TYPE_SECT_SUM in types

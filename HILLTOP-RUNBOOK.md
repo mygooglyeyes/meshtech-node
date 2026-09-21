@@ -139,6 +139,20 @@ only switch is in the configure menu:
 - Proof of state, any time: the log line after boot says either
   'TX off, listen-only' or the feed starts TX pulses.
 
+## SECTION NUMBERING (v1.2, 2026-09-20 - for anyone reading old logs)
+
+Sections are numbered **1 to 9** everywhere - on the wire, in the
+node's logs, and on the web app's map. Section 1 is the upper-left
+(NW) square; 9 is the lower-right (SE); the centre is 5. A target of
+**0 means "the whole map"** in a refresh request - never a square.
+The web app's "Refresh map" button logs as `kind=map`.
+
+Older captures (before this change) used 0-8 for squares, so an old
+log's "section 0" is today's section 1. The wire protocol version
+byte moved from 0x02 to 0x03 at the same time; packets from either
+era are decode-able but the numbering convention differs - compare
+old and new logs with that in mind.
+
 ## WEB APP REFRESH LIMITS (what users will see)
 
 The map refresh button is rationed to protect airtime (S2, 2026-09-20):

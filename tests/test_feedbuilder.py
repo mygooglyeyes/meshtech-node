@@ -30,7 +30,9 @@ def test_pulse_reflects_observations():
     pkt = builder.build_pulse(now=now)
     pulse = codec.decode_pulse(pkt.payload[3:])
     assert pulse.active_total == 5
-    assert pulse.section_counts[4] == 5  # all in the centre section
+    # v1.2 1-based: centre section = 5 -> array index 4 (unchanged wire:
+    # counts are in NW->SE order; only the ids shifted)
+    assert pulse.section_counts[4] == 5
     assert pkt.data_type == codec.TYPE_PULSE
 
 
@@ -45,9 +47,9 @@ def test_section_stats_and_routes():
     store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x41,
                           lat=37.0, lon=-122.0, path_prefixes=[0x11]),
               now=now)
-    pkt = builder.build_sect_sum(4, now=now)
+    pkt = builder.build_sect_sum(5, now=now)   # centre square (v1.2)
     sect = codec.decode_sect_sum(pkt.payload[3:])
-    assert sect.section_id == 4
+    assert sect.section_id == 5
     assert sect.active_nodes == 2
     assert sect.packet_count == 4
     assert sect.delay_p50_s > 0          # honest origin stamps -> delay
@@ -61,7 +63,7 @@ def test_negative_delay_is_never_published():
     store.add(Observation(recv_ts=now, origin_ts=now + 300.0,  # clock skew
                           prefix=0x50, lat=37.0, lon=-122.0,
                           path_prefixes=[0x11]), now=now)
-    pkt = builder.build_sect_sum(4, now=now)
+    pkt = builder.build_sect_sum(5, now=now)
     sect = codec.decode_sect_sum(pkt.payload[3:])
     assert sect.delay_p50_s == 0         # unknown, not a fabricated number
 
@@ -75,7 +77,7 @@ def test_refresh_section_response_shape():
                               path_prefixes=[0x0A]), now=now)
         store.add_position(0x60 + i, 37.0 + i * 0.001, -122.0,
                            f"N{i}", now=now)
-    packets = builder.build_refresh_response(codec.REFRESH_KIND_SECTION, 4,
+    packets = builder.build_refresh_response(codec.REFRESH_KIND_SECTION, 5,
                                              now=now)
     types = [p.data_type for p in packets]
     assert types[0] == codec.TYPE_SECT_SUM

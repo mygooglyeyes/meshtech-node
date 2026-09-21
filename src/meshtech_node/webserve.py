@@ -294,20 +294,32 @@ class WebServe:
             kind_s = obj.get("kind")
             is_map = False
             if kind_s == "layout":
+                # legacy spelling (pre-v1.2 app) for the map button
                 kind = codec.REFRESH_KIND_SECTION
-                target = 0
+                target = codec.REFRESH_WHOLE_AREA
                 is_map = True          # whole-map = the big burst
+            elif kind_s == "map":
+                # v1.2 spelling: the map button says what it means
+                kind = codec.REFRESH_KIND_SECTION
+                target = codec.REFRESH_WHOLE_AREA
+                is_map = True
             elif kind_s == "section":
                 kind = codec.REFRESH_KIND_SECTION
                 target = obj.get("section")
-                if not isinstance(target, int) or not 0 <= target <= 8:
+                # v1.2 wire: squares are 1..9 (1 = NW); 0 = whole-area.
+                if not isinstance(target, int) or \
+                        not 0 <= target <= 9:
                     return
+                is_map = target == codec.REFRESH_WHOLE_AREA
             else:
                 return
-            # S2: whole-map refreshes draw from the GLOBAL budget (2 per
-            # 30 min across all connections); per-section refreshes do
-            # not. Refusals name the wait, so the app can show it.
-            if is_map and not self.map_budget.allow():
+            # S2, closed 2026-09-20: ANY target-0 refresh means
+            # whole-area on the wire, whatever kind string carried it
+            # (the map button has always sent kind=section target=0) -
+            # so the GLOBAL budget keys on target==0, not on is_map.
+            # Real squares (1..9) never draw the global budget.
+            if target == codec.REFRESH_WHOLE_AREA and \
+                    not self.map_budget.allow():
                 wait = self.map_budget.retry_after_s()
                 log.info("whole-map refresh refused - global budget "
                          "spent, %ds until the next slot", wait)
