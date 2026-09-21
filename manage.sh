@@ -29,28 +29,32 @@ APPDIR=/opt/meshtech-node
 HAVE_WHIP=0
 WHIP=""
 command -v whiptail >/dev/null 2>&1 && { HAVE_WHIP=1; WHIP=whiptail; }
-# MENU_PROMPT: the line a menu shows above its options. The datadoor
-# screen sets it to the door state + current password (Brett 2026-09-21:
-# state and password ALWAYS visible at the top, never a text dump).
+# MENU_PROMPT: the ONE line a menu shows above its options. SINGLE
+# LINE ONLY (2026-09-21 lesson: a multi-line prompt needs whiptail
+# flags that vary per distro and breaks the box layout). The datadoor
+# screen sets it to "Door: <state>   Password: <pw>" - one line.
 MENU_PROMPT="Choose:"
-# HAVE_CRWRAP: whiptail's --cr-wrap is what lets the Data Door screen
-# show its multi-line header. Old whiptails REJECT the flag entirely
-# (killing every menu at once - the "configure does nothing" bug), so
-# we probe once and only pass the flag when the binary accepts it.
-HAVE_CRWRAP=0
-if [[ $HAVE_WHIP -eq 1 ]]; then
-  if whiptail --cr-wrap --msgbox probe 4 20 >/dev/null 2>&1 </dev/null; then
-    HAVE_CRWRAP=1
-  fi
-fi
-CRWRAP_FLAG=""
-[[ $HAVE_CRWRAP -eq 1 ]] && CRWRAP_FLAG="--cr-wrap"
+# WHIPTAIL CONFORMANCE (2026-09-21, built ONLY for the man page of
+# 0.52.25-1, Debian trixie's version - the box's actual whiptail):
+# - stream swap "3>&1 1>&2 2>&3" is the manual's own idiom: results
+#   print on STDERR, so the swap moves stderr into the $() capture.
+# - geometry: the manual's NOTES say a size of 0 = "increase as needed
+#   to display all information" - menu list-height 0 fits EVERY item
+#   with no hand arithmetic, so the items-above-the-border bug cannot
+#   happen again.
+# - DIAGNOSTICS: exit 0 = Yes/OK, 1 = No/Cancel, 255 = error or ESC.
+#   Cancel and ESC mean "no choice" - the caller redraws. NOTHING that
+#   exits nonzero may kill the script (set -e): every helper carries
+#   its own guard and reports an honest "no change".
 
 # msg <title> <text>            (info box / plain echo)
 msg() {
   local title="$1" text="$2"
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    whiptail --title "$title" --msgbox "$text" 20 78
+    # msgbox prints nothing and waits for OK; ESC/errors (255) and any
+    # other failure must not kill the script - show it in plain text.
+    whiptail --title "$title" --msgbox "$text" 20 78 || \
+      { echo "== $title =="; echo "$text"; }
   else
     echo "== $title =="; echo "$text"
   fi
@@ -60,11 +64,12 @@ msg() {
 menu() {
   local title="$1"; shift
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    # --cr-wrap (when supported): honor the newlines a caller embeds in
-    # the prompt text - the Data Door screen's multi-line header relies
-    # on it. Never let a whiptail failure kill the whole script: a
-    # nonzero exit just means "no choice"; the loop re-renders.
-    "$WHIP" $CRWRAP_FLAG --title "$title" --menu "${MENU_PROMPT:-Choose:}" 20 78 16 "$@" \
+    # list-height 0 = the manual's auto-fit: whiptail sizes the list
+    # to show EVERY item (NOTES section), so nothing can be drawn
+    # outside the box and no item is ever hidden behind scrolling.
+    # Exit 1 (Cancel) or 255 (ESC/error) = "no choice": return the
+    # empty string, the caller's loop redraws. Never kill the script.
+    "$WHIP" --title "$title" --menu "${MENU_PROMPT:-Choose:}" 0 78 0 "$@" \
       3>&1 1>&2 2>&3 || true
   else
     local i=1 tags=() labels=()
@@ -90,8 +95,13 @@ menu() {
 inputbox() {
   local title="$1" cur="$2"
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    whiptail --title "$title" --inputbox "$title (current: $cur)" \
-      12 70 "$cur" 3>&1 1>&2 2>&3
+    # Exit 1 (Cancel) or 255 (ESC) per the manual's DIAGNOSTICS = the
+    # user wants NO change: keep the current value ("$cur"), never
+    # write an empty one, never kill the script.
+    local v
+    v=$(whiptail --title "$title" --inputbox "$title (current: $cur)" \
+      0 70 "$cur" 3>&1 1>&2 2>&3) || true
+    echo "${v:-$cur}"
   else
     read -rp "$title [$cur]: " v; echo "${v:-$cur}"
   fi
@@ -100,7 +110,9 @@ inputbox() {
 # yesno <title>                 -> 0 yes / 1 no
 yesno() {
   if [[ $HAVE_WHIP -eq 1 ]]; then
-    whiptail --title "$1" --yesno "$1?" 10 60
+    # Manual DIAGNOSTICS: 0 = Yes, 1 = No/Cancel, 255 = ESC/error.
+    # Anything nonzero is treated as No - the safe answer.
+    whiptail --title "$1" --yesno "$1?" 0 60
   else
     read -rp "$1? [y/N] " a; [[ $a == y || $a == Y ]]
   fi
@@ -348,16 +360,17 @@ do_configure() {
         #   3) Return to menu
         local WT="$APPDIR/secrets/webserve.token"
         while true; do
-          local door_state="CLOSED" shown_pw="(door closed - no password)"
+          local door_state="CLOSED" shown_pw="(closed - no password)"
           if [[ -f "$WT" ]]; then
             door_state="OPEN"
             shown_pw="$(cat "$WT")"
           fi
-          MENU_PROMPT="Door: $door_state
-Password: $shown_pw"
+          # ONE-LINE header (multi-line prompts broke the box layout):
+          # state and password share the top line, always visible.
+          MENU_PROMPT="Door: $door_state   Password: $shown_pw"
           local act
           act=$(menu "Data Door" \
-            "open"   "Open door - generate a new password (then it shows above)" \
+            "open"   "Open door - generate a new password (shows above)" \
             "close"  "Close door - revoke the password" \
             "back"   "Return to menu")
           case "$act" in
@@ -461,7 +474,7 @@ Password: $shown_pw"
             pause
           fi
         fi ;;
-      back) return ;;
+      back|quit) return ;;
     esac
   done
 }
