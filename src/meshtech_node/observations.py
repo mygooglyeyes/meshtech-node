@@ -119,11 +119,33 @@ class RollingStore:
             log.exception("node disk write-through failed (prefix %02x) "
                           "- RAM keeps the truth", prefix)
 
+    # PLANET-RANGE GUARD (2026-09-21, found live by Brett's db peek):
+    # a position outside these bounds is CORRUPTION (RF bit errors in a
+    # garbled advert), not data. Hilltop heard prefix F1 claim
+    # (-904.87, -1873.54) with a mojibake name in the same payload.
+    # Storing it would put an off-planet dot on the map; the honest
+    # answer is the same one we give 0.0/0.0: no position.
+    LAT_MAX = 85.0
+    LON_MAX = 180.0
+
     def add_position(self, prefix: int, lat: float, lon: float,
                      name: Optional[str] = None, *,
                      now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         node = self._nodes.setdefault(prefix, {})
+        if abs(lat) > self.LAT_MAX or abs(lon) > self.LON_MAX:
+            log.warning("position REJECTED as corruption: prefix %02x "
+                        "claimed (%.4f, %.4f) - outside the planet; "
+                        "stored as no-position", prefix, lat, lon)
+            # The corrupt position is dropped, but everything else in
+            # the advert is real evidence (name, hearing) and the node
+            # still counts as heard (C3).
+            node["last_advert_ts"] = now
+            node.pop("stale", None)
+            if name:
+                node["name"] = name
+            self._disk_node(prefix, node, now=now)
+            return
         node.update({"lat": lat, "lon": lon, "last_advert_ts": now})
         node.pop("stale", None)      # heard again: no longer stale (C3)
         if name:
