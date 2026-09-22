@@ -1,5 +1,61 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## HARD STOP STATE (2026-09-21 ~17:00) - SUPERSEDED by resume (read for context only)
+RESUMED 2026-09-21 ~18:10. Both next-features are BUILT and TESTED,
+uncommitted: (1) button now reads just "Disconnect" when live;
+(2) connect burst = LAYOUT + PULSE, so the map opens on connect.
+Suite 213 green. Awaiting Brett's commit & push OK (-> 00.000.026).
+The original hard-stop text below is kept for context.
+Session paused by Brett. Where everything stands:
+
+- **v00.000.025 is the live version everywhere.** The feed-killer fix
+  (background section 1..9 + broadcast-loop seatbelt) is committed,
+  pushed, pulled on hilltop, installed, and the service restarted
+  (slow restart - investigate why, see below). NOT yet verified live:
+  Brett must connect the PC app and watch ~10 min to confirm a SECOND
+  cadence pulse fires ~5 min after connect (the old bug killed tick 1).
+- **VERSION RULE (Brett):** version = 00.000.NNN where NNN = total
+  raw push count. 25 pushes done. ALWAYS ask before committing.
+- **NEXT FEATURE - agreed, NOT started (do this on resume):**
+  1. Connect button: while connected it must read just "Disconnect"
+     (green/pressed look is already built); clicking drops the link
+     and it returns to "Connect node". Currently it says
+     "Connect node - Disconnect" which Brett rejected.
+  2. Map on connect: hilltop's connect-time burst must carry the
+     LAYOUT (map frame) + PULSE together, so the area map opens itself
+     on connect without pressing refresh. Today only the pulse goes.
+     Scope: service.py pulse_now/_send_burst on_connect path (node.py
+     wires the callback) + app expectations; tests in
+     test_pulse_on_demand.py get a layout-assertion sibling.
+  Both live in meshtech-node/src (webserve.py fires the callback,
+  service.py builds packets, app/ is the built web page - rebuild
+  from scope-app repo if the button changes: `python build.py` then
+  copy dist/app.js+app.css to meshtech-node/app/).
+- **Uncommitted in scope-app repo** (C:\projects\scope-app): the
+  button change so far (src/App.ts + src/style.css modified,
+  dist already built+synced into meshtech-node/app and SHIPPED in
+  v25). Commit on Brett's OK, or fold into the button redo.
+- **meshtech-node repo: clean** except whiptail_manual.txt (Brett's
+  reference download, gitignored-not, leave alone).
+- **SLOW RESTART mystery:** `sudo systemctl restart meshtech-node`
+  took ~forever at 16:5x. Likely the radio/modem handover timeout
+  (cleanmodem owns SX1262, node is controller). Get
+  `journalctl -u meshtech-node -b --since "-60 min"` around the
+  restart before touching anything.
+- **Pending hilltop bug batches (unchanged, all wait for Brett's go):**
+  six-defect batch (cancel-writes-empty, cancel-kills-script, missing
+  key kills configure, port-edit comma-only match, Ctrl-C kills log
+  view, door toggle restarts stopped service), install-not-restart bug
+  (hit AGAIN this session), install revokes companion access,
+  configure-direct dump-to-CLI, door header label "Return to menu"
+  wording, menu restart/stop/start feedback text.
+- **The PC app is served locally** at http://127.0.0.1:8616/ (static
+  server from C:\projects\scope-app\dist, run doc:
+  C:\projects\.freebuff\run.md). Data door on hilltop is OPEN with a
+  password Brett has. App connect = Direct mode, 192.168.12.145.
+- App feed behaved right after v25 install: health card fills on
+  connect, log stays live. Map still needs refresh (fix #2 above).
+
 ## ACTIVE BUG - feed dies after first PULSE (found+reproduced 2026-09-21 16:20)
 Root cause, proven in my sandbox: the background-summary counter
 (`_background_section`) starts at 0, but the v1.2 renumbering made 0

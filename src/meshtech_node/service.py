@@ -264,17 +264,28 @@ class ScopeService:
         pulse.payload = bytes(pulse.payload)
         return pulse
 
-    async def pulse_now(self, *, reason: str = "pulse_now") -> None:
+    async def pulse_now(self, *, reason: str = "pulse_now",
+                        with_layout: bool = False) -> None:
         """Build and send a PULSE immediately. Called when a new web
         client connects (Brett, 2026-09-21: a fresh app must see the
         Feed-health card fill right away, not wait up to one cadence).
         Airtime-honest: one ~20 B packet through the usual budget; with
         TX off it is refused on the air and STILL served on the wire
-        tap - exactly the cadence pulse's behavior."""
-        pulse = self.build_pulse_now()
-        log.info("PULSE on demand (%s) - uptime %d min",
-                 reason, int(time.time() - self.started_at) // 60)
-        await self._send_burst([pulse], gap=0.0)
+        tap - exactly the cadence pulse's behavior.
+
+        with_layout=True (the CONNECT case, Brett 2026-09-21): the burst
+        opens with the LAYOUT (map frame) first, so a freshly opened app
+        draws the area grid the instant it connects - no refresh press,
+        no waiting for the hourly cadence. Layout-then-pulse order
+        matches the whole-area refresh burst (map frame before data)."""
+        burst = []
+        if with_layout:
+            burst.append(self.builder.build_layout())
+        burst.append(self.build_pulse_now())
+        log.info("PULSE on demand (%s%s) - uptime %d min",
+                 reason, " + LAYOUT" if with_layout else "",
+                 int(time.time() - self.started_at) // 60)
+        await self._send_burst(burst, gap=0.0)
 
     def _route_mine(self, route_id: int) -> bool:
         """Multi-host route check: any section I own contains this route."""

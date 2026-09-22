@@ -79,7 +79,11 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     # Connect-time PULSE (Brett 2026-09-21): a new web client gets the
     # Feed-health card filled immediately. HOST feeds only - a companion
     # has no host pulse to give (heard packets are its map).
-    connect_pulse = None if settings.feed.companion_mode else brain.pulse_now
+    # with_layout (Brett, same day): the connect burst ALSO carries the
+    # LAYOUT map frame, so the area grid draws the moment the app
+    # connects - no refresh press needed.
+    connect_pulse = (None if settings.feed.companion_mode
+                     else lambda: brain.pulse_now(with_layout=True))
     serve = webserve.WebServe(
         settings.webserve.host, settings.webserve.port,
         token=_token(settings),

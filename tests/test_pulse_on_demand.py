@@ -6,6 +6,9 @@ received yet" for up to five minutes. Two fixes pinned here:
 
 - a NEW web client receives a PULSE immediately after connect
   (host mode only - companions have no host pulse to give);
+- the CONNECT burst also carries the LAYOUT map frame FIRST
+  (Brett, same day: the area grid draws on connect, no refresh
+  press needed);
 - a WHOLE-AREA refresh burst carries a PULSE too, so the refresh
   button fills the health card on the spot.
 """
@@ -65,6 +68,28 @@ class _TappedService(ScopeService):
 
     def attach_tap(self):
         self.feed_tap = self._Tap(self)
+
+
+@pytest.mark.asyncio
+async def test_connect_burst_carries_layout_then_pulse():
+    """The connect burst = LAYOUT first, then PULSE: map draws, health
+    fills, one connect, no refresh press."""
+    svc = _TappedService()
+    svc.attach_tap()
+    await svc.pulse_now(reason="test-connect", with_layout=True)
+    kinds = [dt for dt, _p, _w, _t in svc.tapped]
+    assert kinds == [0x5305, 0x5301]    # LAYOUT, then PULSE
+
+
+@pytest.mark.asyncio
+async def test_pulse_now_without_layout_stays_pulse_only():
+    """Other pulse_now callers (cadence catch-up etc.) keep the old
+    single-packet behavior - the layout rides only on connect."""
+    svc = _TappedService()
+    svc.attach_tap()
+    await svc.pulse_now(reason="test-plain")
+    kinds = [dt for dt, _p, _w, _t in svc.tapped]
+    assert kinds == [0x5301]            # PULSE only, no LAYOUT
 
 
 def test_build_pulse_now_has_honest_uptime():
