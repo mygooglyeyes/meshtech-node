@@ -1,5 +1,44 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## TODO: web app reconnect retries (Brett, 2026-09-21 ~21:00)
+After a drop the app gave up too fast - Brett had to Ctrl+F5 to get
+it back. Give the direct-mode link at least 10 reconnect tries with
+a short backoff before surrendering to the Connect button.
+(scope-app, not hilltop.)
+
+## DONE: Ctrl+F5 reminder (Brett, 2026-09-21: "just include a Ctrl+F5
+reminder when we reboot the server") - every restart path in
+manage.sh (install self-restart, start, restart) now prints:
+"ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."
+
+## RESOLVED (2026-09-21 ~20:15): slow restart - CLOSED
+Fast restart verified by Brett WITH a client connected (the exact
+condition that used to hang ~60 s). Root cause was aiohttp's default
+shutdown timeout waiting on open WebSockets; fixed in v29
+(shutdown_timeout=1 + explicit client close). Install also
+self-restarts the service now (v29, verified live).
+
+## OPEN QUESTION (Brett, 2026-09-21 ~20:00): active nodes 50 -> 1 -> 2
+After Ctrl+F5 + reconnect the card showed 1 active node (2 after a
+manual refresh) where it had shown 50 before. Likely benign: active =
+nodes heard by the CURRENT process in the last hour; hilltop's
+in-memory store restarted recently (17:38 boot + tonight's restarts),
+so the window refills from zero. The 50 was the OLD page's
+long-accumulated view. VERIFY next session: after ~1h uptime, does
+active climb back toward the true mesh count? If yes: no bug - but
+consider an honest 'uptime' hint on the card so the number's context
+is visible. If it stays at 1-2 with live RX flowing: real bug in
+identity extraction - investigate then.
+
+## IDEA (Brett, 2026-09-21 ~19:50): actively ASK the mesh to identify
+Is there a flood/local packet that asks nodes to advert or identify?
+MeshCore answer (docs + openhop_core): YES - PAYLOAD_TYPE_CONTROL
+DISCOVER_REQ (control sub_type 0x8) floods, and nodes answer with
+DISCOVER_RESP (pubkey + SNR + type). Also: our own node could TX its
+own advert on connect. Design first: what we send, how often, airtime
+budget, and whether responses give us positions (probably not -
+ adverts still needed for lat/lon). Wait for Brett's go to design.
+
 ## Feed health: "mapped nodes" stat (Brett: stat FIRST, client-side) - BUILDING
 Between "active nodes" and "mesh RX/hour" on the app's Feed health
 card: a MAPPED-nodes count - active nodes that have a position (the

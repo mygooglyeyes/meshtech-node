@@ -303,12 +303,18 @@ do_install() {
     systemctl --no-pager --lines 5 status "$SERVICE" || true
     echo
     echo "Watch it live any time with:  sudo ./manage.sh logs"
+    # Brett, 2026-09-21: the web app holds the OLD page until it is
+    # force-refreshed - a normal reconnect keeps failing. Say it every
+    # time the service restarts.
+    echo
+    echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."
   elif yesno "Start the meshtech-node service now"; then
     systemctl start "$SERVICE"
     sleep 2
     systemctl --no-pager --lines 10 status "$SERVICE" || true
     echo
     echo "Watch it live any time with:  sudo ./manage.sh logs"
+    echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."
   else
     echo "Not started. When you are ready:  sudo ./manage.sh start"
   fi
@@ -563,9 +569,9 @@ do_menu() {
       configure) do_configure ;;
       verify)    do_verify; [[ $HAVE_WHIP -eq 1 ]] && read -rp "Enter to continue..." _ ;;
       passwords) do_passwords ;;
-      start)     need_root start; systemctl start "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; pause ;;
+      start)     need_root start; systemctl start "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; echo; echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."; pause ;;
       stop)      need_root stop; systemctl stop "$SERVICE"; echo "stopped"; pause ;;
-      restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; pause ;;
+      restart)   need_root restart; systemctl restart "$SERVICE"; sleep 1; systemctl --no-pager --lines 5 status "$SERVICE" || true; echo; echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."; pause ;;
       status)    systemctl --no-pager --lines 15 status "$SERVICE" || true; pause ;;
       logs)      journalctl -u "$SERVICE" -f --no-pager; pause ;;
       bench)     require_installed; PYTHONPATH="$APPDIR/src":"$APPDIR" "$APPDIR/.venv/bin/python" -m meshtech_node --config "$APPDIR/config.json" --bench-no-radio; pause ;;
