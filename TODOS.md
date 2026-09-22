@@ -11,9 +11,13 @@ the openhop REPEATER's companion feed (repeater-decoded events) vs
 our raw chip firehose - not directly comparable. AUDIT PLAN (after
 the db ships): compare per hour cleanmodem's rx counter vs
 rawsource's heard/decoded/dup/undecodable stats line - every gap gets
-a name, so 'just me or an issue' becomes a number. Second lever:
-import CONTACTS from the companion radio (its saved node list) to
-fill the db for nodes whose adverts we've never caught.
+a name, so 'just me or an issue' becomes a number.
+APPLES-TO-APPLES IDEA (Brett, ~22:40): the openhop repeater built up
+a LOT of node history in its own database - that is why identifying
+was easier then. Compare: how many of OUR known nodes appear in the
+openhop repeater's node db? That measures coverage, not hearing.
+Second lever: import CONTACTS from the companion radio (its saved
+node list) to fill the db for nodes whose adverts we've never caught.
 
 ## BUILT, AWAITING COMMIT: disk memory (Brett, 2026-09-21 ~22:00)
 The plugin's SQLite store adopted (node_store.py): nodes + repeaters
