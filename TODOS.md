@@ -1,5 +1,53 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## Feed health: "mapped nodes" stat (Brett: stat FIRST, client-side) - BUILDING
+Between "active nodes" and "mesh RX/hour" on the app's Feed health
+card: a MAPPED-nodes count - active nodes that have a position (the
+dots that should be visible). Brett wants the calculation CLIENT-SIDE
+(the app derives it from the node data it already holds) so the number
+is always current, never waiting on a server stat refresh.
+
+## DM attribution (sender+dest hashes for direct packets) - ON HOLD
+Brett, 2026-09-21: another time. Research + wire facts stay recorded
+below for whenever it comes back.
+
+## Feed health: add a "mapped nodes" stat (Brett, 2026-09-21)
+Between "active nodes" and "mesh RX/hour" on the app's Feed health
+card, add a MAPPED-nodes count - how many of the active nodes actually
+have a position (dots that should be visible on the map). That tells
+Brett at a glance whether the map is full or whether idents are still
+missing. Source: the store's node table (nodes with lat/lon in
+window); the app can also compute it from its own INTRO/node state.
+Needs: count source decided (host-side pulse field vs app-side
+derived), then build + test. Wire change adds a pulse field - version
+the codec honestly if we extend the packet.
+
+## DM attribution: record sender+dest hashes + paths for direct packets (APPROVED, next build)
+Direct packets (REQ/RESPONSE/TXT/ACK/ANON_REQ) carry a 1-byte dest
+hash + 1-byte src hash as the first two PAYLOAD bytes, readable
+without keys (proven against openhop_core packet_builder:
+_hash_bytes(dest, local) prepends them). Wire fact: a direct-routed
+packet's path is the REPEATER chain; sender is the src hash byte.
+Build: rawsource records dest_hash + src_hash on those types (bytes
+outside the MAC - honest, no crypto), Observation carries them, node
+table gains a who-talks-to-whom view, and advert identification lights
+up named DM routes. Tests pin the byte positions. Backfill of TRULY
+anonymous group traffic is impossible honestly - Brett informed
+(2026-09-21 ~19:15) that prefix=0 rows stay unattributed.
+
+## Destination tracking (Brett question, 2026-09-21 ~19:00) - DECIDED: not tracked yet, worth adding
+Direct packets (REQ 0x00, RESPONSE 0x01, TXT 0x02, ACK 0x03,
+PATH 0x08, ANON_REQ 0x07) carry a 1-byte destination hash + source
+hash INSIDE their encrypted payload header (per docs.meshcore.io
+packet_format + payloads). Our rawsource records these packets today
+as header-only observations: path recorded, dest/src hashes DROPPED
+(stats.ignored_type). To track recipients: parse the first 2 payload
+bytes for those types (dest=byte0, src=byte1, readable WITHOUT any
+keys - they sit outside the MAC), record dest_hash in the Observation,
+and surface it in the node table/UI ("packets TO x"). Pairs with the
+retroactive-path-backfill feature (Brett approved build next).
+Docs read: https://docs.meshcore.io/packet_format/ + /payloads/
+
 ## HARD STOP STATE (2026-09-21 ~17:00) - SUPERSEDED by resume (read for context only)
 RESUMED 2026-09-21 ~18:10. Both next-features are BUILT and TESTED,
 uncommitted: (1) button now reads just "Disconnect" when live;
