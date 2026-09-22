@@ -606,11 +606,18 @@ class ScopeService:
                     # C3: prune the node table on the layout cadence (rare):
                     # 14d silent -> stale (off maps), 30d -> forgotten.
                     counts = self.store.prune_nodes(now=now)
-                    if counts["stale"] or counts["forgotten"]:
-                        log.info("node table pruned: %d stale, %d forgotten "
-                                 "(table: %d nodes)", counts["stale"],
-                                 counts["forgotten"],
-                                 self.store.active_nodes_ever())
+                    # REPEATER PRUNE (2026-09-21): the table's own expiry
+                    # (30d silent tags) existed but was NEVER CALLED - the
+                    # one RAM structure that could grow forever in a
+                    # long-running process. Same rare cadence, disk mirror
+                    # included. (Found in Brett's RAM-bloat audit.)
+                    pruned_tags = self.external_source.repeaters.prune(now=now) \
+                        if self.external_source is not None else 0
+                    if counts["stale"] or counts["forgotten"] or pruned_tags:
+                        log.info("node table pruned: %d stale, %d forgotten, "
+                                 "%d repeater tag(s) expired (table: %d nodes)",
+                                 counts["stale"], counts["forgotten"],
+                                 pruned_tags, self.store.active_nodes_ever())
                     pkt = self.builder.build_layout()
                     await self._send_burst([pkt], gap=0.0)
                     self.builder._last_layout = now

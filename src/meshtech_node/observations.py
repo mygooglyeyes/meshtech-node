@@ -13,10 +13,13 @@ An observation is ONE received packet as the repeater saw it.
 """
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
+
+log = logging.getLogger("meshtech-node.observations")
 
 
 @dataclass
@@ -67,7 +70,16 @@ class Observation:
 
 
 class RollingStore:
-    """The last `window_seconds` of observations, with aggregations."""
+    """The last `window_seconds` of observations, with aggregations.
+
+    DISK MEMORY (2026-09-21, Brett: the plugin's database adopted):
+    `disk`, when set, is the NodeStore. Node-table facts (who exists,
+    name, position, class) are written through the moment they are
+    learned - no accumulate-and-flush buffer, so RAM cannot bloat -
+    and at boot refill_nodes() restores what RAM forgot. The packet
+    window itself is NEVER written to disk (scope rule: no raw packet
+    storage anywhere).
+    """
 
     def __init__(self, window_seconds: float = 3600.0):
         self.window_seconds = window_seconds
@@ -76,6 +88,8 @@ class RollingStore:
         self._nodes: Dict[int, Dict[str, object]] = {}
         # prefix -> BackboneNeighbor (direct RF links of the host box)
         self._neighbors: Dict[int, BackboneNeighbor] = {}
+        # Optional NodeStore (disk write-through + boot refill).
+        self.disk = None
 
     # ------------------------------------------------------------ input
 
@@ -83,6 +97,27 @@ class RollingStore:
         now = time.time() if now is None else now
         self._obs.append(obs)
         self._prune(now)
+
+    def _disk_node(self, prefix: int, node: Dict[str, object], *,
+                   now: float) -> None:
+        """Write one node's current facts through to disk (best-effort:
+        a database hiccup never takes the RX path down; the RAM table
+        stays the working truth, retried on the next fact)."""
+        if self.disk is None:
+            return
+        try:
+            lat = node.get("lat")
+            lon = node.get("lon")
+            self.disk.upsert_node(
+                prefix,
+                name=node.get("name"),
+                node_class=node.get("node_class"),
+                lat=float(lat) if lat is not None else None,
+                lon=float(lon) if lon is not None else None,
+                ts=now)
+        except Exception:
+            log.exception("node disk write-through failed (prefix %02x) "
+                          "- RAM keeps the truth", prefix)
 
     def add_position(self, prefix: int, lat: float, lon: float,
                      name: Optional[str] = None, *,
@@ -93,6 +128,7 @@ class RollingStore:
         node.pop("stale", None)      # heard again: no longer stale (C3)
         if name:
             node["name"] = name
+        self._disk_node(prefix, node, now=now)
 
     def add_node_class(self, prefix: int, node_class: int) -> None:
         """Record a node-class hint (INTRO flags bits 2-3; 0 = unknown).
@@ -104,6 +140,7 @@ class RollingStore:
         value = int(node_class) & 0x3
         if value != 0:
             node["node_class"] = value
+            self._disk_node(prefix, node, now=time.time())
 
     def add_name(self, prefix: int, name: str, *,
                  now: Optional[float] = None) -> None:
@@ -116,6 +153,48 @@ class RollingStore:
         node["last_advert_ts"] = max(float(node.get("last_advert_ts", 0)),
                                      now)
         node.pop("stale", None)
+        self._disk_node(prefix, node, now=now)
+
+    def refill_nodes(self, rows: List[dict]) -> int:
+        """Boot refill: restore the disk node table into RAM.
+
+        Disk rows become RAM node entries with their ORIGINAL
+        first/last times (staleness math stays honest across a
+        restart - a node silent for a week is still a week silent).
+        RAM wins where both exist: an existing RAM entry is never
+        touched (disk is the older copy). Returns rows restored.
+        """
+        restored = 0
+        now = time.time()
+        for row in rows:
+            try:
+                prefix = int(row.get("prefix"))
+            except (TypeError, ValueError):
+                continue          # malformed row: skip, never crash boot
+            if prefix in self._nodes:
+                continue          # RAM wins: disk is the older copy
+            node: Dict[str, object] = {
+                "last_advert_ts": float(row.get("last_seen") or now),
+            }
+            if row.get("name"):
+                node["name"] = row["name"]
+            if row.get("lat") is not None and row.get("lon") is not None:
+                node["lat"] = row["lat"]
+                node["lon"] = row["lon"]
+            if row.get("node_class"):
+                node["node_class"] = int(row["node_class"])
+            # C3 honesty across restarts: disk last_seen older than the
+            # stale line means the node comes back STALE (off maps) -
+            # exactly as it would have been with no restart in between.
+            if now - float(node["last_advert_ts"]) > self.STALE_AFTER_S:
+                node["stale"] = True
+            self._nodes[prefix] = node
+            restored += 1
+        if restored:
+            log.info("node table refilled from disk: %d node(s) "
+                     "restored (RAM table now %d)", restored,
+                     len(self._nodes))
+        return restored
 
     def add_backbone_neighbor(self, nb: BackboneNeighbor) -> None:
         """Record/refresh one direct RF neighbor (repeater-measured)."""
@@ -145,6 +224,14 @@ class RollingStore:
             elif age > self.STALE_AFTER_S:
                 node["stale"] = True
                 stale += 1
+        # DISK MEMORY: mirror the forget rule so disk cannot outgrow
+        # RAM's posture (stale-marking is derived, only deletion is
+        # stored - the disk copy carries no stale flag).
+        if self.disk is not None and forgotten:
+            try:
+                self.disk.forget_older_than(now - self.FORGET_AFTER_S)
+            except Exception:
+                log.exception("node disk prune failed - RAM stays the truth")
         return {"stale": stale, "forgotten": forgotten}
 
     def node_is_stale(self, prefix: int, *, now: Optional[float] = None,

@@ -13,6 +13,7 @@ memory.
 | **meshtech-bot / lora-bot** (Brett Stewart, MIT, (c) 2026) | Proven code adapted into the node: the packet core (`core/mcp.py` -> `packets.py`), the cleanmodem controller client (`cleanmodem/client.py`), radio layer patterns, and the mesh answer-bot architecture that shaped the standalone design. Brett's own work. | MIT |
 | **cleanmodem** (Brett Stewart) | Ships inside this repo (`cleanmodem/`): the radio server that owns the SX1262 (SPI/GPIO) and serves it over an authenticated loopback TCP port. Proven on hilltop before this project existed. Brett's own work. | MIT (project's terms) |
 | **meshtech-scope** (Brett Stewart) | The scope brain: feed builder, budget/airtime rules, section election, grid geometry, and the wire packet formats (PULSE 5301, BACKGROUND 5302, LAYOUT 5305) adapted into `src/meshtech_node/`. Brett's own work. | MIT (project's terms) |
+| **meshtech-plugin (answer bot)** (Brett Stewart) | The disk database: `core/store.py`'s Store adopted as `node_store.py` (nodes + repeaters tables, WAL + synchronous=NORMAL flash tuning, numbered migrations, upsert keeps-known-values rule) - Brett's own work, reused per his instruction (2026-09-21). Raw packet/message tables deliberately NOT adopted (scope rule). | MIT (project's terms) |
 | **scope-app** (Brett Stewart) | The browser app served by the node from `app/` (built bundle). Brett's own work. | MIT (project's terms) |
 
 ## Data sources

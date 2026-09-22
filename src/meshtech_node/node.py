@@ -76,6 +76,34 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     brain.external_source = source
     brain.tx_enabled = settings.feed.tx_enabled   # C2: one source
 
+    # DISK MEMORY (2026-09-21, Brett: "use the database we made"): the
+    # plugin's SQLite store adopted for nodes + repeaters. Every fact
+    # is written through as learned; the boot refill below restores
+    # what a restart would otherwise forget. Raw packets are never
+    # stored (scope rule - hilltop processes them; the RAM window is
+    # the only packet memory). Companion mode skips it: a companion's
+    # tables would duplicate its host's.
+    if not settings.feed.companion_mode:
+        from .node_store import NodeStore
+        try:
+            disk = NodeStore(settings.storage.db_path)
+        except Exception:
+            log.exception("node database FAILED to open at %s - running "
+                          "memory-only (honest gap, logged once)",
+                          settings.storage.db_path)
+            disk = None
+        if disk is not None:
+            source.repeaters.sink = disk
+            brain.store.disk = disk
+            # BOOT REFILL: disk -> RAM before the first packet flows, so
+            # a restart forgets nobody (the map is whole in seconds).
+            n_nodes = brain.store.refill_nodes(disk.node_rows())
+            n_tags = source.repeaters.refill_from(disk.repeater_rows())
+            if n_nodes or n_tags:
+                log.info("disk memory restored: %d node(s), %d repeater "
+                         "tag(s) from %s", n_nodes, n_tags,
+                         settings.storage.db_path)
+
     # Connect-time PULSE (Brett 2026-09-21): a new web client gets the
     # Feed-health card filled immediately. HOST feeds only - a companion
     # has no host pulse to give (heard packets are its map).
@@ -110,7 +138,26 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
                 data_type, plaintext,
                 snr=getattr(rx, "snr", None))
         source.on_heard = _tap_heard
+    # disk handle travels on the source's repeater table (single owner;
+    # main() closes it on shutdown via _close_disk). None in companion
+    # mode or when the open failed (memory-only posture).
     return source, sender, brain, serve
+
+
+def _disk_of(source) -> object:
+    """The NodeStore handle (None when companion/memory-only)."""
+    return getattr(source.repeaters, "sink", None)
+
+
+def _close_disk(source) -> None:
+    """Commit + close the database on shutdown (best-effort)."""
+    disk = _disk_of(source)
+    if disk is not None:
+        try:
+            disk.close()
+        except Exception:
+            log.exception("node database close failed (WAL committed "
+                          "up to the last checkpoint)")
 
 
 def _state_snapshot(brain, source) -> dict:
@@ -318,6 +365,7 @@ async def _main(argv: Optional[list] = None) -> int:
         await runner.cleanup()
         if radio is not None:
             await radio.stop()
+        _close_disk(source)   # commit + close the database last
 
 
 def _is_loopback(host: str) -> bool:

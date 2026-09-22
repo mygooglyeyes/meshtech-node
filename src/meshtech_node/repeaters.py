@@ -23,9 +23,12 @@ alias-prone; hash_size rides on the entry so the UI can say so.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+log = logging.getLogger("meshtech-node.repeaters")
 
 
 @dataclass
@@ -58,10 +61,18 @@ class RepeaterTable:
     kept forever: an unheard tag ages out (30 days default, matching
     the store's FORGET_AFTER_S posture) - the counts stay honest to
     the recent mesh, not to history.
+
+    DISK MEMORY (2026-09-21, Brett: the plugin's database adopted):
+    `sink`, when set, is the NodeStore. Every change is written
+    through the moment it happens (no accumulate-and-flush buffer, so
+    RAM cannot bloat); at boot the RAM table is refilled from the
+    store so a restart forgets nobody. sink=None = pure RAM (tests).
     """
 
     expire_after_seconds: float = 30 * 86400.0
     entries: Dict[bytes, RepeaterEntry] = field(default_factory=dict)
+    sink: Optional[object] = field(default=None, repr=False,
+                                   compare=False)
 
     def observe_tag(self, tag: bytes, *, now: Optional[float] = None,
                     ) -> RepeaterEntry:
@@ -75,7 +86,26 @@ class RepeaterTable:
         entry.last_heard = now
         if entry.first_heard == 0.0:
             entry.first_heard = now
+        self._sink_entry(entry)
         return entry
+
+    def _sink_entry(self, entry: RepeaterEntry) -> None:
+        """Write one entry through to disk (best-effort: a database
+        hiccup must never take the RX path down - the RAM table stays
+        the working truth; logged loudly, retried on the next change)."""
+        if self.sink is None:
+            return
+        try:
+            self.sink.upsert_repeater(
+                entry.tag, entry.hash_size, entry.relay_count,
+                entry.first_heard, entry.last_heard,
+                pubkey=entry.pubkey.hex() if entry.pubkey else None,
+                name=entry.name, prefix=entry.prefix,
+                node_class=entry.node_class)
+        except Exception:
+            log.exception("repeater write-through failed (tag %s) - "
+                          "RAM keeps the truth; retried on next change",
+                          entry.tag.hex())
 
     def observe_advert(self, pubkey: bytes, name: Optional[str],
                        node_class: int, *, now: Optional[float] = None,
@@ -96,8 +126,47 @@ class RepeaterTable:
                 entry.name = name
                 entry.prefix = pubkey[0]
                 entry.node_class = int(node_class) & 0x3
+                self._sink_entry(entry)     # promotion reaches disk too
                 promoted.append(entry)
         return promoted
+
+    def refill_from(self, rows: List[dict]) -> int:
+        """Boot refill: load the disk table back into RAM.
+
+        Rows come from NodeStore.repeater_rows(). A RAM entry never
+        loses to a disk row (disk is the older copy): existing RAM
+        entries keep their live counts; only tags RAM has forgotten
+        (or never saw) are restored. Returns rows restored.
+        """
+        restored = 0
+        for row in rows:
+            tag = row.get("tag_bytes")
+            if not tag:
+                continue
+            if tag in self.entries:
+                continue
+            try:
+                pubkey_hex = row.get("pubkey")
+                entry = RepeaterEntry(
+                    tag=tag,
+                    hash_size=int(row.get("hash_size") or len(tag)),
+                    relay_count=int(row.get("relay_count") or 0),
+                    first_heard=float(row.get("first_heard") or 0.0),
+                    last_heard=float(row.get("last_heard") or 0.0),
+                    pubkey=bytes.fromhex(pubkey_hex) if pubkey_hex else None,
+                    name=row.get("name"),
+                    prefix=row.get("prefix"),
+                    node_class=int(row.get("node_class") or 0),
+                )
+            except (TypeError, ValueError):
+                continue          # malformed row: skip, never crash boot
+            self.entries[tag] = entry
+            restored += 1
+        if restored:
+            log.info("repeater table refilled from disk: %d tag(s) "
+                     "restored (RAM table now %d)", restored,
+                     len(self.entries))
+        return restored
 
     def unknown_repeaters(self) -> List[RepeaterEntry]:
         """Tags with no matching advert yet - the accountability list."""
@@ -111,12 +180,21 @@ class RepeaterTable:
                       key=lambda e: -e.relay_count)
 
     def prune(self, *, now: Optional[float] = None) -> int:
-        """Drop silent entries; returns how many (honest logging)."""
+        """Drop silent entries; returns how many (honest logging).
+        Disk copy pruned with the same rule (the sink's mirror), so
+        RAM and disk never disagree about who is forgotten."""
         now = time.time() if now is None else now
         dead = [tag for tag, e in self.entries.items()
                 if now - e.last_heard > self.expire_after_seconds]
         for tag in dead:
             del self.entries[tag]
+            if self.sink is not None:
+                try:
+                    self.sink.forget_repeaters_older_than(
+                        now - self.expire_after_seconds)
+                except Exception:
+                    log.exception("repeater disk prune failed - "
+                                  "RAM stays the truth")
         return len(dead)
 
     def __len__(self) -> int:

@@ -1,5 +1,32 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## WATCH (Brett, 2026-09-21 ~22:30): are we hearing ALL the packets?
+"I know there are more than 49 active nodes... the plugin was getting
+far more hits." Research done: our RX chain has NO filters - the chip
+serves every frame to cleanmodem (fan-out delivers the same bytes to
+every client, no RSSI floor, no channel gate), and rawsource turns
+EVERY frame into an observation (headers of foreign/unreadable
+traffic included). Plugin-era difference: the bot listened through
+the openhop REPEATER's companion feed (repeater-decoded events) vs
+our raw chip firehose - not directly comparable. AUDIT PLAN (after
+the db ships): compare per hour cleanmodem's rx counter vs
+rawsource's heard/decoded/dup/undecodable stats line - every gap gets
+a name, so 'just me or an issue' becomes a number. Second lever:
+import CONTACTS from the companion radio (its saved node list) to
+fill the db for nodes whose adverts we've never caught.
+
+## BUILT, AWAITING COMMIT: disk memory (Brett, 2026-09-21 ~22:00)
+The plugin's SQLite store adopted (node_store.py): nodes + repeaters
+written through to disk as learned (no raw packets - scope rule, and
+NONE on a future battery phone), boot refill restores what a restart
+forgot (with honest staleness: a 20-day-silent node returns STALE),
+RAM stays the working truth (db failure never breaks RX), and the
+repeater-table expiry that was NEVER CALLED now runs on the layout
+cadence with its disk mirror. 12 new tests; suite 228 green.
+NOTE for hilltop: first boot creates /opt/meshtech-node/data/
+(scope.db via storage.db_path). manage.sh install already copies the
+program; the data dir is created by the store itself.
+
 ## TODO: web app reconnect retries (Brett, 2026-09-21 ~21:00)
 After a drop the app gave up too fast - Brett had to Ctrl+F5 to get
 it back. Give the direct-mode link at least 10 reconnect tries with
