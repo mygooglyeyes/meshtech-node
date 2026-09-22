@@ -165,6 +165,21 @@ class WebServe:
     def current_req_id(self) -> Optional[str]:
         return self._req_stack[-1] if self._req_stack else None
 
+    async def close_all_clients(self, code: int = 1001) -> None:
+        """Close every connected browser WS (GOING_AWAY).
+
+        Shutdown path: without this, cleanup waits on the open sockets
+        (aiohttp's shutdown timeout) and a restart hangs ~60 s per
+        connected client (the 2026-09-21 slow-restart bug). Closing
+        explicitly lets the browser reconnect to the NEW process."""
+        for ws in list(self.clients):
+            try:
+                await ws.close(code=code,
+                               message=b"node restarting")
+            except Exception:
+                pass          # a dead socket must not block shutdown
+        self.clients.clear()
+
     # ------------------------------------------------------------- tap ----
     def on_built_packet(self, data_type: int, payload: bytes, *,
                         would_tx: bool, tx_ok: bool = False,

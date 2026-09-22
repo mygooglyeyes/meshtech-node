@@ -233,7 +233,12 @@ async def _main(argv: Optional[list] = None) -> int:
         serve.add_static(settings.webserve.static_dir)
         log.info("Serving scope-app from %s", settings.webserve.static_dir)
 
-    runner = web.AppRunner(serve.app)
+    # SHUTDOWN_TIMEOUT=1 (2026-09-21, the slow-restart fix): aiohttp's
+    # default (60.1 s) waits for OPEN WEBSOCKETS during cleanup, so a
+    # single connected browser made every restart hang for a minute
+    # (Brett: "disconnect the app and it restarts immediately"). One
+    # second is ample for our own graceful WS close below.
+    runner = web.AppRunner(serve.app, shutdown_timeout=1.0)
     await runner.setup()
     site = web.TCPSite(runner, serve.host, serve.port)
     await site.start()
@@ -303,6 +308,10 @@ async def _main(argv: Optional[list] = None) -> int:
         return exit_code
     finally:
         brain.stop()
+        # close_all_clients BEFORE cleanup: the browser learns "node
+        # restarting" instantly instead of waiting out the shutdown
+        # timeout (the slow-restart bug, Brett 2026-09-21).
+        await serve.close_all_clients()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

@@ -291,7 +291,19 @@ do_install() {
   echo "(updates: git pull, then sudo ./manage.sh install again)."
   echo "Transmit is OFF - starting the service turns on listening only."
   pause
-  if yesno "Start the meshtech-node service now"; then
+  # RESTART-IF-RUNNING (Brett, 2026-09-21: "make sure the last thing it
+  # does is restart the services"): install over /opt while the service
+  # keeps running the OLD copy. If it was up when install began, restart
+  # it now - the new code cannot load otherwise. (Brett hit this three
+  # times this week; the summary even printed while it ran.)
+  if systemctl is-active --quiet "$SERVICE"; then
+    echo "- service was running - restarting it to load the new code..."
+    systemctl restart "$SERVICE"
+    sleep 2
+    systemctl --no-pager --lines 5 status "$SERVICE" || true
+    echo
+    echo "Watch it live any time with:  sudo ./manage.sh logs"
+  elif yesno "Start the meshtech-node service now"; then
     systemctl start "$SERVICE"
     sleep 2
     systemctl --no-pager --lines 10 status "$SERVICE" || true
