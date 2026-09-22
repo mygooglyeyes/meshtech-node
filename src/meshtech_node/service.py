@@ -286,6 +286,42 @@ class ScopeService:
                  reason, " + LAYOUT" if with_layout else "",
                  int(time.time() - self.started_at) // 60)
         await self._send_burst(burst, gap=0.0)
+        if with_layout:
+            # NODE ROSTER (Brett, 2026-09-21): the connect burst also
+            # carries the full INTRO roster (names/positions/classes),
+            # so the app's mapped-nodes count fills on CONNECT - not
+            # only after a refresh press.
+            await self._send_intro_roster()
+
+    async def _send_intro_roster(self) -> None:
+        """Send INTRO batches until every known node has gone out once.
+
+        build_intro_batch cycles forever (the cadence uses that to
+        rotate which nodes ride along), so a naive cursor count both
+        over- and under-shoots (proven in the sandbox: mid-cycle
+        batches repeat the positioned prefix and skip plain ones).
+        The honest stop condition: track the PREFIXES actually sent
+        and stop when no batch adds anything new. Typically 2-4 small
+        packets (~100 B body each); the 32-batch cap is belt-and-braces
+        against a pathological roster."""
+        total = len(self.builder.store.known_nodes())
+        if total == 0:
+            return
+        seen: set = set()
+        batches = 0
+        while batches < 32:
+            pkt = self.builder.build_intro_batch()
+            if pkt is None:
+                break
+            fresh = [e for e in codec.decode_any(pkt.payload).entries
+                     if e.prefix not in seen]
+            await self._send_burst([pkt], gap=0.0)
+            if not fresh:
+                break        # this batch added nothing new - roster done
+            seen.update(e.prefix for e in fresh)
+            batches += 1
+            if len(seen) >= total:
+                break
 
     def _route_mine(self, route_id: int) -> bool:
         """Multi-host route check: any section I own contains this route."""

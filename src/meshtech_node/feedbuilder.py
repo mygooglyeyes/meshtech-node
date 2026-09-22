@@ -261,10 +261,16 @@ class FeedBuilder:
                 positioned.append(prefix)
             else:
                 plain.append(prefix)
-        ordered = positioned[self._intro_cursor % max(1, len(positioned)):] + \
-            positioned[:self._intro_cursor % max(1, len(positioned))] + \
-            plain[self._intro_cursor % max(1, len(plain)):] + \
-            plain[:self._intro_cursor % max(1, len(plain))]
+        # ROTATE THE WHOLE LIST AS ONE (2026-09-21 roster fix): rotating
+        # each group independently re-queued positioned nodes at the
+        # front of EVERY batch, so name-only (plain) nodes beyond the
+        # first ~9 entries never fit any batch - proven in the sandbox
+        # (plain nodes invisible on air). One combined rotation: the
+        # cursor walks the entire roster, positioned nodes still lead
+        # the very first batch (cursor 0).
+        ordered_all = positioned + plain
+        c = self._intro_cursor % max(1, len(ordered_all))
+        ordered = ordered_all[c:] + ordered_all[:c]
         for prefix in ordered:
             info = self.store.node_info(prefix) or {}
             name = info.get("name")
