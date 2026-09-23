@@ -25,13 +25,12 @@ are CAPPED (the existing S2 refresh budget: 2 whole-area per 30 min
 global; per-section unchanged; cap now also gates size-trimmed
 requests). Automatic pulses keep reporting the full 60x60 sections;
 the manual refresh is what trims the picture to the user's window.
-BRETT CONFIRMED 2026-09-23 ("correct"). Build order: DESIGN-DOC
-REVISION FIRST (project rule 4), covering: the 60x60 server default
-(install menu loses the size question or it becomes the phone's
-setting), the refresh-request size field (wire change, codec version
-bump), the size-trimmed reply, and the multi-server stitching for the
-nearest-server future. NOT BUILT YET - awaiting Brett's go to write
-the doc revision.
+BRETT CONFIRMED 2026-09-23 ("correct"). Design revision WRITTEN:
+MAP-SIZE-DESIGN.md (8 sections: the picture, server changes,
+phone changes, the one-field wire change, limits, automatic feed
+shape, nearest-server rationale, 6-step build order). AWAITING
+Brett's line-by-line verification of that doc before anything is
+built (project rule 4).
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
