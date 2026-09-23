@@ -1,5 +1,18 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word "commit and push"): name-supersede
+## replaces the twin merge = node v00.000.040 / phone v00.000.008
+Brett's corrected rule built, tested, committed, pushed: node main
+767b254 + tag v00.000.040 (3cf2515 supersede, 1305902 version,
+767b254 served phone v8 bundle); phone main 5b20b0c + tag
+v00.000.008 (c45300c dotNodes collapse, 5b20b0c version). Branch
+syncs: phone web/android-twa/apple-web ff + tools merge a9c91d8
+(android/apple untouched); node's 4 local mirror branches at 767b254.
+NEXT: hilltop install (git pull && sudo ./manage.sh install), then
+Ctrl+F5 + reconnect - live test: ONE dot per node (KN6OBW DT was the
+doubled one). Boot log should show the two old same-name rows
+collapse to one at refill.
+
 ## BUILT, UNCOMMITTED (2026-09-23): name-supersede replaces the twin
 ## merge (Brett's corrected design; awaiting his commit word)
 Brett's live test: dots STILL doubled after v39 (connection drops,
