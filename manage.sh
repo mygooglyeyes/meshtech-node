@@ -5,6 +5,9 @@
 #                                 plain fallback otherwise)
 #   sudo ./manage.sh install      first-time install (venv, deps,
 #                                 secrets, config, systemd unit)
+#   sudo ./manage.sh update       refresh to the latest git code:
+#                                 pull, copy, deps, service file,
+#                                 restart - NO config questions
 #   sudo ./manage.sh configure    edit radio + feed settings (menu of
 #                                 the values that matter)
 #   sudo ./manage.sh passwords    rotate / regenerate the secrets
@@ -265,6 +268,21 @@ sync_to_appdir() {
     src app cleanmodem deploy tests pyproject.toml "$APPDIR"/
 }
 
+# install_python_deps - the dependency half of install, shared with
+# update (2026-09-23, Brett's flow fix: an update must NEVER re-ask
+# the config questions install asks).
+install_python_deps() {
+  [[ -d "$APPDIR/.venv" ]] || python3 -m venv "$APPDIR/.venv"
+  "$APPDIR/.venv/bin/pip" install --quiet --upgrade pip
+  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome
+  "$APPDIR/.venv/bin/python" -c "import spidev" 2>/dev/null \
+    || "$APPDIR/.venv/bin/pip" install --quiet spidev \
+    || echo "WARNING: spidev unavailable - radio will not start"
+  "$APPDIR/.venv/bin/python" -c "import gpiod" 2>/dev/null \
+    || "$APPDIR/.venv/bin/pip" install --quiet gpiod \
+    || echo "WARNING: gpiod unavailable - radio will not start"
+}
+
 do_install() {
   need_root install
   echo "== meshtech-node install =="
@@ -275,15 +293,7 @@ do_install() {
   echo "- copying program to $APPDIR ..."
   sync_to_appdir
   echo "- installing python dependencies (this can take a few minutes)..."
-  [[ -d "$APPDIR/.venv" ]] || python3 -m venv "$APPDIR/.venv"
-  "$APPDIR/.venv/bin/pip" install --quiet --upgrade pip
-  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome
-  "$APPDIR/.venv/bin/python" -c "import spidev" 2>/dev/null \
-    || "$APPDIR/.venv/bin/pip" install --quiet spidev \
-    || echo "WARNING: spidev unavailable - radio will not start"
-  "$APPDIR/.venv/bin/python" -c "import gpiod" 2>/dev/null \
-    || "$APPDIR/.venv/bin/pip" install --quiet gpiod \
-    || echo "WARNING: gpiod unavailable - radio will not start"
+  install_python_deps
   mkdir -p "$APPDIR/secrets" && chmod 700 "$APPDIR/secrets"
   if [[ -f "$APPDIR/secrets/modem.token" ]]; then
     echo "- internal radio secret already exists - keeping it"
@@ -297,14 +307,14 @@ do_install() {
     echo "  never needs it - rotate any time with: sudo ./manage.sh passwords)"
   fi
   [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
-  # Migrate a pre-2026-09-20 modem.conf that used the LoRa notation
-  # (coding_rate 5 = CR 4/5): cleanmodem's parser takes the INDEX
-  # (1..4). 5 meant CR 4/5 then; write the index 1 that means the same.
-  sed -i 's/^coding_rate *= *5/coding_rate = 1/' "$APPDIR/modem.conf"
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
   guided_web_question
   guided_center_question
+  # Migrate a pre-2026-09-20 modem.conf that used the LoRa notation
+  # (coding_rate 5 = CR 4/5): cleanmodem's parser takes the INDEX
+  # (1..4). 5 meant CR 4/5 then; write the index 1 that means the same.
+  sed -i 's/^coding_rate *= *5/coding_rate = 1/' "$APPDIR/modem.conf"
   sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
   sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
   echo "- writing the service file (runs from $APPDIR)"
@@ -372,6 +382,96 @@ do_passwords() {
   echo
   echo "If the service is running, restart it to use the new password:"
   echo "  sudo ./manage.sh restart"
+}
+
+# version_of <dir> - the pyproject version of a source tree (empty
+# when unreadable: an honest unknown, never a guess).
+version_of() {
+  grep -m1 -E '^version *=' "$1/pyproject.toml" 2>/dev/null | sed 's/.*= *//; s/"//g'
+}
+
+do_update() {
+  need_root update
+  require_installed
+  echo "== meshtech-node update =="
+  echo "Pulls the latest code, updates the running install, restarts"
+  echo "the service. Your settings (radio, port, home area) and secrets"
+  echo "stay untouched - update never asks config questions."
+  echo
+  local was_running=0
+  systemctl is-active --quiet "$SERVICE" && was_running=1
+  # 1) GIT PULL - in $SCRIPTDIR (this folder stays the git source).
+  #    FAIL CLOSED: the box is headless; if the pull would need
+  #    hands (network down, a working tree that changed, a diverged
+  #    clone), the update stops BEFORE anything is copied - the
+  #    running service is never left half-updated.
+  # Git runs AS THE FOLDER'S OWNER (root running git in a user clone
+  # hits git's safe.directory refusal - "dubious ownership"), and the
+  # clone keeps its owner, so a later manual git pull still works.
+  local src_user
+  src_user="$(stat -c '%U' "$SCRIPTDIR")"
+  echo "- checking for new code (git) ..."
+  if ! sudo -u "$src_user" git -C "$SCRIPTDIR" pull --ff-only --quiet; then
+    echo "UPDATE STOPPED - git pull failed (above). Nothing was changed:"
+    echo "the running service keeps the old code. Fix the git problem"
+    echo "(or check the network) and run: sudo ./manage.sh update"
+    return 1
+  fi
+  # Compare the pulled source against what is INSTALLED (/opt), not
+  # against the pre-pull folder: 'git pull by hand, then update' and
+  # 'update does the pull' must both land the new code.
+  local src_ver run_ver
+  src_ver="$(version_of "$SCRIPTDIR")"
+  run_ver="$(version_of "$APPDIR")"
+  if [[ "$src_ver" == "$run_ver" ]]; then
+    echo "- already at the newest code (version ${src_ver:-unknown};"
+    echo "  the installed copy matches)."
+    echo
+    echo "Nothing to do. Restart is NOT needed."
+    pause
+    return 0
+  fi
+  echo "- updating: version ${run_ver:-unknown} -> ${src_ver:-unknown}"
+  echo "- recent changes:"
+  sudo -u "$src_user" git -C "$SCRIPTDIR" log --oneline -5
+  echo
+  # 2) COPY + DEPS + SERVICE FILE - the install mechanics with ZERO
+  #    questions: every config question (radio, port, home area) is
+  #    skipped - the live /opt configs stay exactly as they are.
+  echo "- copying program to $APPDIR ..."
+  sync_to_appdir
+  echo "- installing python dependencies (this can take a few minutes)..."
+  install_python_deps
+  # A new release can ship an updated service file - re-write it with
+  # the same template install uses.
+  sed "s|@APPDIR@|$APPDIR|g" deploy/meshtech-node.service > /etc/systemd/system/${SERVICE}.service
+  systemctl daemon-reload
+  systemctl enable "$SERVICE" >/dev/null
+  # 3) RESTART (Brett's flow: an update ends with the new code live).
+  #    install's rule applies: restart only if it was running.
+  if [[ $was_running -eq 1 ]] && systemctl is-active --quiet "$SERVICE"; then
+    echo "- service was running - restarting it to load the new code..."
+    systemctl restart "$SERVICE"
+    sleep 2
+    systemctl --no-pager --lines 5 status "$SERVICE" || true
+    echo
+    echo "Watch it live any time with:  sudo ./manage.sh logs"
+    echo
+    echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."
+  elif [[ $was_running -eq 0 ]]; then
+    echo "- service was not running - started it to load the new code."
+    systemctl start "$SERVICE"
+    sleep 2
+    systemctl --no-pager --lines 5 status "$SERVICE" || true
+    echo
+    echo "ON YOUR PC: press Ctrl+F5 on the web app page, then reconnect."
+  else
+    echo "- service had already stopped on its own - NOT restarting it."
+    echo "  Start it when ready with:  sudo ./manage.sh start"
+  fi
+  echo
+  echo "Update complete: version ${src_ver:-unknown}."
+  pause
 }
 
 do_configure() {
@@ -590,6 +690,7 @@ do_menu() {
     local pick
     pick=$(menu "meshtech-node manager" \
       "install"    "first-time install (venv, deps, secrets, service)" \
+      "update"     "get the latest version: pull, update, restart (keeps settings)" \
       "configure"  "radio + feed settings (frequency, SF, ...)" \
       "verify"     "#scope key fingerprint + radio params check" \
       "passwords"  "rotate the modem token" \
@@ -603,6 +704,7 @@ do_menu() {
       "quit"       "leave the manager")
     case "$pick" in
       install)   do_install ;;
+      update)    do_update ;;
       configure) do_configure ;;
       verify)    do_verify; [[ $HAVE_WHIP -eq 1 ]] && read -rp "Enter to continue..." _ ;;
       passwords) do_passwords ;;
@@ -622,6 +724,7 @@ cmd="${1:-menu}"
 case "$cmd" in
   menu)      do_menu ;;
   install)   do_install ;;
+  update)    do_update ;;
   configure) do_configure ;;
   passwords) do_passwords ;;
   verify)    do_verify; pause ;;
