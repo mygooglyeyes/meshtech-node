@@ -1,5 +1,19 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word "commit & push"): manage.sh update
+## command (fd0c491 on main; no version bump - runtime code unchanged)
+Brett's flow fix: no more full config Q&A after every git pull.
+'sudo ./manage.sh update' (+ menu item) = pull --ff-only as the clone
+owner (fail-closed: pull failure changes NOTHING), version report
+(installed /opt vs pulled source - a manual pull first still lands),
+last-5 change notes, copy + deps + service file, restart-if-running /
+start-if-stopped, ZERO config questions, settings + secrets untouched.
+install now shares the install_python_deps helper (behavior identical).
+NOTE: box still on v40; first update run will honestly say "already at
+the newest code (version 40)" and skip the restart - that IS the safe
+live test. Box needs ONE more manual git pull to receive this manage.sh.
+NEXT: Brett pulls once + runs sudo ./manage.sh update as the test.
+
 ## PUSHED (2026-09-23, Brett's word "commit and push"): name-supersede
 ## replaces the twin merge = node v00.000.040 / phone v00.000.008
 Brett's corrected rule built, tested, committed, pushed: node main
