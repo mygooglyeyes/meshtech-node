@@ -59,9 +59,15 @@ page flashes ~1/s). FIXED (tick-only clock: timer updates just the
 pulse-age text) -> node v00.000.037 / phone v00.000.005, pushed,
 served copy refreshed via repaired sync_to_node (it still pointed at
 the pre-restructure web/ layout). android/apple phone branches left
-alone (unique stage-2 work, self-consistent with remotes). Remaining:
-hilltop install of v37 + Ctrl+F5 + reconnect, then the dropdown live
-test (selector opens and STAYS open, pick sticks, refresh trims).
+alone (unique stage-2 work, self-consistent with remotes). v37 INSTALLED on hilltop 2026-09-23 09:19 - dropdown live test
+PASSED ("functioning as intended"; no more 1s page flash).
+SECOND live bug: section-map node dots rendered as black specks -
+the dot rim was drawn in map units, so any zoom-in fattened it past
+the fill (Brett's call 2026-09-23: dots need NO border at all).
+FIXED rimless (style.css .dot stroke:none) -> node v00.000.038 /
+phone v00.000.006 pushed, branches synced, served copy refreshed.
+Remaining: hilltop install of v38 + Ctrl+F5 + reconnect; dots
+should be bright on the main map AND section detail maps.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
