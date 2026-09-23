@@ -1,5 +1,32 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT, UNCOMMITTED (2026-09-23): name-supersede replaces the twin
+## merge (Brett's corrected design; awaiting his commit word)
+Brett's live test: dots STILL doubled after v39 (connection drops,
+reconnects, refresh). His corrected rule, approved with one amendment:
+THE NAME IS THE IDENTITY and identities MOVE - a fresh advert carrying
+a name that matches an existing DIFFERENT prefix retires that old row
+(RAM + disk), freshest advert wins, NO distance test, no plausibility
+judgment. AMENDMENT (his): implausible location data is still filtered
+before saving - satisfied by the existing planet-range + half-fix
+guards, which run BEFORE any supersede (a torn advert can neither
+move a dot nor delete a good one).
+- SERVER: observations.py same_place/TWIN_MERGE_* GONE ->
+  node_with_name(); add_position supersedes by name; boot refill
+  collapses same-name disk rows fresher-wins in EITHER arrival order
+  (older row forgotten from disk both ways; honest restored count).
+  node_store.forget_node docstring updated. tests/test_twin_merge.py
+  rewritten (9 tests - the far-apart test now PINS supersede).
+- PHONE: state.ts dotNodes() = one dot per name, freshest lastIntroTs
+  wins (ties -> latest arrival); filteredNodes() collapses too, so the
+  mapped-nodes count equals drawn dots. App.ts/demo.ts all map+count
+  call sites use it. state.test.ts +3 tests (7 total). Nameless rows
+  never collapse (nothing to collapse BY) - server + client agree.
+TESTS: node 257 passed (6 skipped); phone all suites green + bundle
+rebuilt; served copy synced into node repo app/ (8 files).
+NEXT: Brett reviews -> commit BOTH repos -> push (node v00.000.040 /
+phone v00.000.008) -> hilltop install -> live test: one dot per node.
+
 ## PUSHED (2026-09-23, Brett's word): twin merge + startup saved view +
 ## auto sized refresh = node v00.000.039 / phone v00.000.007
 Committed (node 8d24f2c + f7126ee; phone 0fbbcdd + 1d1408d), tagged,

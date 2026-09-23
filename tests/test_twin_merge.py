@@ -1,16 +1,30 @@
-"""Twin-identity merge tests (2026-09-23, Brett's double-dots report).
+"""Name-supersede tests (2026-09-23, Brett's corrected design).
 
-hilltop's own table held KN6OBW DT twice - prefix 3b AND a8, positions
-~40 m apart, both with fixes. Both rows drew: the "second dot right
-next to the node" on the map. The invariants:
+v39's twin-merge needed same name AND nearly the same place (<=100 m);
+Brett's live test then showed dots STILL doubling, and the corrected
+rule is simpler and stronger: THE NAME IS THE IDENTITY. A fresh advert
+carrying a name that matches an existing DIFFERENT prefix is a verified
+change of location - identities are allowed to MOVE (mobile devices) -
+so the old dot for that name is retired and the freshest advert wins.
+NO distance test, no motion plausibility judgment.
 
-1. An advert for one identity, arriving where ANOTHER identity claims
-   the same name at the same place, merges: the newest identity wins,
-   the older row is retired (RAM + disk), never drawn again.
-2. The merge NEVER fires on name alone or place alone - different
-   nodes at close range (repeater pairs, neighbors) survive intact.
-3. A boot refill collapses twins already sitting on disk, keeping the
-   fresher identity, and deletes the older row from disk.
+Brett's amendment: implausible location data must still be filtered
+before anything is saved - that stays the planet-range + half-fix
+guards, which run BEFORE any supersede (test_position_guard.py pins
+them; the interplay tests here pin that a torn advert can neither
+relocate nor delete a good dot).
+
+The invariants:
+1. Same name, ANY distance apart: the fresh advert supersedes - the
+   old identity is retired (RAM + disk), the newest wins.
+2. A nameless advert cannot prove a name match: it never supersedes,
+   never retires anything.
+3. Corrupt/half-fix adverts are filtered first: a name arriving with
+   an implausible fix keeps its name/hearing evidence but never moves
+   a dot and never deletes another node's good position.
+4. The boot refill collapses same-name rows already on disk - fresher
+   identity kept in EITHER arrival order, older row deleted from disk
+   so it cannot resurrect on the next restart.
 """
 import os
 import sys
@@ -29,74 +43,117 @@ def _store(tmp_path):
     return ram, disk
 
 
-# OFF-WIRE INTRO DECODE (the live client path): positions decode as
-# deltas from the wire's assumed 40 km span; at 38 degrees the factor
-# is cos(38) ~= 0.788, so a true 40 m separation arrives as ~31 m in
-# the decoded lat. Tests place twins at the DECODED separation so the
-# numbers match what the merge actually sees.
-TWIN_LAT_SEP = 0.00003     # ~3 m decoded (a real twin's wobble)
-CITY_LAT_SEP = 0.0006      # ~60 m decoded (two distinct close nodes)
-
-
-def test_same_name_same_place_merges(tmp_path):
+def test_same_name_far_apart_supersedes(tmp_path):
+    """The corrected rule: identities MOVE. Same name kilometers apart
+    is a device that changed location - the freshest advert wins and
+    the old dot is retired (RAM + disk). No distance test anywhere."""
     ram, disk = _store(tmp_path)
-    now = time.time()
-    ram.add_position(0x3B, 37.4419, -122.1430, "KN6OBW DT", now=now - 60)
-    # the SAME node, heard later under a second identity
-    ram.add_position(0xA8, 37.4419 + TWIN_LAT_SEP, -122.1430,
-                     "KN6OBW DT", now=now)
-    assert 0x3B not in ram.known_nodes()       # old identity retired
-    assert 0xA8 in ram.known_nodes()           # newest identity wins
-    info = ram.node_info(0xA8)
-    assert info.get("name") == "KN6OBW DT"
-    assert disk.forget_node(0x3B) == 0         # already gone from disk
-    assert len(disk.node_rows()) == 1
-
-
-def test_same_name_far_apart_never_merges(tmp_path):
-    """Same name, kilometers apart: two real nodes (a name reuse), not
-    a twin - both survive."""
-    ram, _disk = _store(tmp_path)
     now = time.time()
     ram.add_position(0x10, 37.4419, -122.1430, "Relay", now=now - 60)
     ram.add_position(0x11, 38.4419, -122.1430, "Relay", now=now)
-    assert 0x10 in ram.known_nodes()
-    assert 0x11 in ram.known_nodes()
+    assert 0x10 not in ram.known_nodes()       # old identity retired
+    assert 0x11 in ram.known_nodes()           # newest identity wins
+    info = ram.node_info(0x11)
+    assert info.get("name") == "Relay"
+    assert disk.forget_node(0x10) == 0         # already gone from disk
+    assert len(disk.node_rows()) == 1
+
+    # ...and the device moves BACK: its old prefix re-advertises, the
+    # new one retires. Freshest advert wins, every time.
+    ram.add_position(0x10, 37.4419, -122.1430, "Relay", now=now + 60)
+    assert 0x11 not in ram.known_nodes()
+    assert ram.node_info(0x10).get("lat") == 37.4419
+    assert disk.forget_node(0x11) == 0
 
 
-def test_same_place_different_names_never_merges(tmp_path):
-    """Two nodes on one tower / two neighbors: the name is what the
-    operator trusts - different names NEVER collapse into each other."""
+def test_same_place_close_still_supersedes(tmp_path):
+    """The twin case that started this: two identities of one node
+    ~40 m apart, same name. Distance is irrelevant now - the name
+    alone collapses them; newest wins."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x3B, 37.4419, -122.1430, "KN6OBW DT", now=now - 60)
+    ram.add_position(0xA8, 37.4419 + 0.00003, -122.1430, "KN6OBW DT",
+                     now=now)
+    assert 0x3B not in ram.known_nodes()
+    assert 0xA8 in ram.known_nodes()
+    assert len(disk.node_rows()) == 1
+
+
+def test_different_names_never_supersede(tmp_path):
+    """Two nodes on one tower / two neighbors / a phone and its owner:
+    different names NEVER collapse into each other - the name is what
+    the operator trusts."""
     ram, _disk = _store(tmp_path)
     now = time.time()
     ram.add_position(0x20, 37.4419, -122.1430, "Alpha", now=now - 60)
-    ram.add_position(0x21, 37.4419 + TWIN_LAT_SEP, -122.1430, "Beta",
-                     now=now)
+    ram.add_position(0x21, 37.4419 + 0.00003, -122.1430, "Beta", now=now)
     assert 0x20 in ram.known_nodes()
     assert 0x21 in ram.known_nodes()
 
 
-def test_nameless_second_identity_does_not_merge(tmp_path):
-    """An advert with no name can't prove it is a twin - it must not
-    retire the named identity (name + place BOTH required)."""
+def test_nameless_advert_never_supersedes(tmp_path):
+    """An advert with no name can't prove it shares a name with an
+    existing row - it never retires anything (even at the exact same
+    place: place is not identity anymore)."""
     ram, _disk = _store(tmp_path)
     now = time.time()
     ram.add_position(0x30, 37.4419, -122.1430, "Named", now=now - 60)
-    ram.add_position(0x31, 37.4419 + TWIN_LAT_SEP, -122.1430, None,
-                     now=now)
+    ram.add_position(0x31, 37.4419, -122.1430, None, now=now)
     assert 0x30 in ram.known_nodes()
     assert 0x31 in ram.known_nodes()
 
 
+def test_corrupt_advert_filtered_before_supersede(tmp_path):
+    """Brett's amendment: implausible location data is filtered BEFORE
+    anything is saved. A torn advert carrying a good node's name must
+    NOT (a) move that node's dot to the corrupt fix, nor (b) delete
+    the node's good position. Off-planet and half-fix both covered."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x40, 38.1074, -122.5697, "Good Node", now=now - 60)
+    # off-planet, same name, different prefix
+    ram.add_position(0x41, -904.87, -1873.54, "Good Node", now=now)
+    # half-fix (lat torn to exactly 0.0), same name, different prefix
+    ram.add_position(0x42, 0.0, -121.9, "Good Node", now=now + 1)
+    # the good dot survived, unmoved:
+    assert 0x40 in ram.known_nodes()
+    info = ram.node_info(0x40)
+    assert info.get("lat") == 38.1074
+    assert info.get("lon") == -122.5697
+    # the corrupt rows kept only hearing/name evidence - no position:
+    for p in (0x41, 0x42):
+        assert p in ram.known_nodes()
+        assert ram.node_info(p).get("lat") is None
+        assert ram.node_info(p).get("lon") is None
+        assert ram.node_info(p).get("name") == "Good Node"
+    assert len(disk.node_rows()) == 3          # evidence kept on disk
+
+
+def test_corrupt_row_superseded_by_later_clean_advert(tmp_path):
+    """Mirror case: the corrupt advert arrives FIRST (stored as
+    name + hearing, no position), the clean one after. The clean
+    advert supersedes it - nothing of value is lost (the old row held
+    no dot) and the table converges on one good record per name."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x50, 0.0, -121.9, "Mover", now=now - 60)
+    assert ram.node_info(0x50).get("lat") is None   # corrupt: no dot
+    ram.add_position(0x51, 38.1074, -122.5697, "Mover", now=now)
+    assert 0x51 in ram.known_nodes()           # good fix stored
+    assert ram.node_info(0x51).get("lat") == 38.1074
+    assert 0x50 not in ram.known_nodes()       # junk row retired
+    assert len(disk.node_rows()) == 1          # one record for the name
+
+
 def test_boot_refill_collapses_disk_twins(tmp_path):
-    """Rows written before the merge existed: the boot refill keeps the
-    fresher identity and deletes the older row from disk so it cannot
-    resurrect on the next restart."""
+    """Rows written before the name rule existed: the boot refill keeps
+    the fresher identity (regardless of arrival order) and deletes the
+    older row from disk so it cannot resurrect on the next restart."""
     ram, disk = _store(tmp_path)
     now = time.time()
     ram.add_position(0x3B, 37.4419, -122.1430, "KN6OBW DT", now=now - 60)
-    ram.add_position(0xA8, 37.4419 + TWIN_LAT_SEP, -122.1430, "KN6OBW DT",
-                     now=now)
+    ram.add_position(0xA8, 38.4419, -122.1430, "KN6OBW DT", now=now)
     disk.close()
     disk2 = type(disk)(str(tmp_path / "twin.db"))
     ram2 = RollingStore(window_seconds=3600.0)
@@ -106,3 +163,43 @@ def test_boot_refill_collapses_disk_twins(tmp_path):
     assert 0xA8 in ram2.known_nodes()
     assert 0x3B not in ram2.known_nodes()
     assert disk2.forget_node(0x3B) == 0        # deleted from disk too
+    # and the fresh dot carries the freshest location:
+    assert ram2.node_info(0xA8).get("lat") == 38.4419
+
+
+def test_boot_refill_collapses_disk_twins_either_order(tmp_path):
+    """Same collapse with the rows arriving oldest-LAST (SQLite gives
+    no row-order promise): the older identity is still the one that
+    loses, and it is deleted from disk too."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x10, 38.4419, -122.1430, "Relay", now=now - 30)
+    ram.add_position(0x11, 37.4419, -122.1430, "Relay", now=now)
+    disk.close()
+    disk2 = type(disk)(str(tmp_path / "twin.db"))
+    ram2 = RollingStore(window_seconds=3600.0)
+    ram2.disk = disk2
+    rows = disk2.node_rows()
+    rows.reverse()                             # newest first
+    restored = ram2.refill_nodes(rows)
+    assert restored == 1
+    assert 0x11 in ram2.known_nodes()
+    assert 0x10 not in ram2.known_nodes()
+    assert disk2.forget_node(0x10) == 0        # older gone BOTH sides
+
+
+def test_boot_refill_nameless_rows_untouched(tmp_path):
+    """Only names collapse at boot - nameless rows restore as-is (the
+    live path guards them the same way)."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x20, 37.4419, -122.1430, "Named", now=now - 60)
+    ram.add_position(0x21, 37.4419, -122.1430, None, now=now)
+    disk.close()
+    disk2 = type(disk)(str(tmp_path / "twin.db"))
+    ram2 = RollingStore(window_seconds=3600.0)
+    ram2.disk = disk2
+    restored = ram2.refill_nodes(disk2.node_rows())
+    assert restored == 2
+    assert 0x20 in ram2.known_nodes()
+    assert 0x21 in ram2.known_nodes()

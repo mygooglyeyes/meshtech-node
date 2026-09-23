@@ -171,9 +171,9 @@ class NodeStore:
             "SELECT COUNT(*) FROM nodes").fetchone()[0])
 
     def forget_node(self, prefix: int) -> int:
-        """Delete ONE node row (the RAM twin-merge's disk mirror: the
-        retired identity must not resurrect at the next boot refill).
-        Returns rows deleted (0 = nothing to forget)."""
+        """Delete ONE node row (the RAM name-supersede's disk mirror:
+        the retired identity must not resurrect at the next boot
+        refill). Returns rows deleted (0 = nothing to forget)."""
         with self._conn:
             cur = self._conn.execute(
                 "DELETE FROM nodes WHERE prefix = ?", (int(prefix),))

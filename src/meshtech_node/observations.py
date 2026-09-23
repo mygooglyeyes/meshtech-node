@@ -163,35 +163,43 @@ class RollingStore:
                 node["name"] = name
             self._disk_node(prefix, node, now=now)
             return
-        # TWIN MERGE (2026-09-23, Brett caught the double dots): the
-        # same physical node can arrive under two radio identities -
-        # hilltop's own table held KN6OBW DT as prefix 3b AND a8,
-        # positions ~40 m apart. Same NAME and nearly the same PLACE
-        # is one node seen twice; both rows drew and became the
-        # "second dot slightly offset" on the map. The NEWEST identity
-        # (the advert just received) wins; the older identity is
-        # retired here and at the next prune on disk too. Different
-        # names at close range (neighbors, repeater pairs) are NEVER
-        # merged - the name is what the operator sees and trusts.
+        # NAME SUPERSEDE (2026-09-23, Brett's corrected design): the
+        # name is the node's identity on the map, and identities are
+        # allowed to MOVE (mobile devices). A fresh advert carrying a
+        # name that matches an EXISTING DIFFERENT prefix is a verified
+        # change of location: the FRESHEST advert wins and the old dot
+        # for that name is retired (RAM + disk). NO distance test, no
+        # motion plausibility judgment - the name is the proof. The
+        # planet-range and half-fix guards ABOVE already ran, so an
+        # implausible (torn/corrupt) advert is filtered before any of
+        # this: it keeps its name/hearing evidence but never relocates
+        # nor deletes a good dot. A nameless advert cannot prove a
+        # name match and never supersedes.
         if name:
-            twin = self.same_place(name, lat, lon, now=now)
-            if twin is not None and twin != prefix:
-                old = self._nodes.pop(twin)
-                node.update(old)
+            victim = self.node_with_name(name, exclude_prefix=prefix)
+            if victim is not None:
+                old = self._nodes.pop(victim)
+                # Inherit the retired identity's extra facts (class)
+                # only where the fresh advert is silent - unknown
+                # never overwrites known.
+                for k, v in old.items():
+                    if k not in ("name", "lat", "lon", "last_advert_ts",
+                                 "stale"):
+                        node.setdefault(k, v)
                 node.update({"lat": lat, "lon": lon,
                              "last_advert_ts": now})
                 node["name"] = name
                 node.pop("stale", None)
-                log.info("twin identities merged: %02x -> %02x "
-                         "(same name + same place, one node)",
-                         twin, prefix)
+                log.info("name superseded: %02x -> %02x (fresh advert "
+                         "for '%s'; freshest wins, old dot retired)",
+                         victim, prefix, name)
                 if self.disk is not None:
                     try:
-                        self.disk.forget_node(twin)
+                        self.disk.forget_node(victim)
                     except Exception:
-                        log.exception("twin disk removal failed "
+                        log.exception("superseded disk removal failed "
                                       "(prefix %02x) - RAM stays the "
-                                      "truth", twin)
+                                      "truth", victim)
                 self._disk_node(prefix, node, now=now)
                 return
         node.update({"lat": lat, "lon": lon, "last_advert_ts": now})
@@ -258,41 +266,56 @@ class RollingStore:
             # exactly as it would have been with no restart in between.
             if now - float(node["last_advert_ts"]) > self.STALE_AFTER_S:
                 node["stale"] = True
-            # TWIN MERGE at boot (2026-09-23): disk rows written before
-            # the merge existed can hold BOTH identities of one node.
+            # NAME SUPERSEDE at boot (2026-09-23): disk rows written
+            # before the name rule existed can hold BOTH identities of
+            # one node - and by Brett's rule ANY two rows sharing a
+            # name are one node (the name is the operator's identity).
             # Restoring both would redraw the double dots after every
-            # restart. Same name + same place on disk = one node: the
-            # FRESHER identity is kept (the older row's facts ride
-            # along), and the older row is deleted from disk so it
-            # cannot come back on the next boot either.
+            # restart. The FRESHER identity is kept (the older row's
+            # class rides along where the fresher is silent) and the
+            # OLDER row is deleted from disk - in BOTH directions, so
+            # one pass converges the table to one row per name.
             nm = node.get("name")
-            if nm is not None and "lat" in node and "lon" in node:
-                twin = self.same_place(str(nm), float(node["lat"]),
-                                       float(node["lon"]), now=now)
-                if twin is not None and twin != prefix:
+            if nm is not None:
+                twin = self.node_with_name(str(nm), exclude_prefix=prefix)
+                if twin is not None:
                     old_ts = float(self._nodes[twin].get("last_advert_ts",
                                                          0))
                     new_ts = float(node["last_advert_ts"])
                     if new_ts <= old_ts:
-                        continue   # the restored twin IS the fresher identity
+                        # the restored row IS the older identity: it
+                        # loses now and must never come back either
+                        if self.disk is not None:
+                            try:
+                                self.disk.forget_node(prefix)
+                            except Exception:
+                                log.exception("older twin disk removal "
+                                              "failed (prefix %02x)",
+                                              prefix)
+                        continue
                     old = self._nodes.pop(twin)
-                    merged = dict(old)
-                    merged.update({k: v for k, v in node.items()
-                                   if v is not None})
+                    # The retired twin was itself restored earlier in
+                    # this boot pass, so the honest count is the table
+                    # that REMAINS (one row per name), not rows read.
+                    restored -= 1
+                    for k, v in old.items():
+                        if k not in ("name", "lat", "lon",
+                                     "last_advert_ts", "stale"):
+                            node.setdefault(k, v)
                     if now - new_ts > self.STALE_AFTER_S:
-                        merged["stale"] = True
+                        node["stale"] = True
                     else:
-                        merged.pop("stale", None)
-                    self._nodes[prefix] = merged
+                        node.pop("stale", None)
+                    self._nodes[prefix] = node
                     restored += 1
                     if self.disk is not None:
                         try:
                             self.disk.forget_node(twin)
                         except Exception:
-                            log.exception("twin disk removal failed "
-                                          "(prefix %02x) - RAM stays the "
-                                          "truth", twin)
-                    log.info("twin identities merged at boot refill: "
+                            log.exception("superseded disk removal "
+                                          "failed (prefix %02x) - RAM "
+                                          "stays the truth", twin)
+                    log.info("name superseded at boot refill: "
                              "%02x -> %02x", twin, prefix)
                     continue
             self._nodes[prefix] = node
@@ -354,30 +377,18 @@ class RollingStore:
         return (now if now is not None else time.time()) - \
             float(last) > self.STALE_AFTER_S
 
-    # TWIN MERGE radius (2026-09-23, the double-dots report): two
-    # identities of ONE node land within GPS wobble of each other.
-    # 100 m is ~10x a phone-class GPS error and ~30x the advert's own
-    # grid resolution - far tighter than any two neighboring repeaters.
-    TWIN_MERGE_METERS = 100.0
-    TWIN_MERGE_DEG = TWIN_MERGE_METERS / 111320.0
-
-    def same_place(self, name: str, lat: float, lon: float, *,
-                   now: Optional[float] = None) -> Optional[int]:
-        """Find a DIFFERENT known identity claiming the same name at
-        effectively the same place - one physical node under two radio
-        prefixes. Returns the OLD prefix (the twin to retire), or None.
-
-        Both facts must match: same name alone is a coincidence risk,
-        same place alone is every repeater on a shared tower."""
-        now = time.time() if now is None else now
+    def node_with_name(self, name: str, *,
+                       exclude_prefix: Optional[int] = None,
+                       ) -> Optional[int]:
+        """Find a DIFFERENT known identity holding this exact name -
+        one physical node under two radio prefixes (names are what the
+        operator sees and trusts: one name = one dot). Returns the OLD
+        prefix (the row to retire), or None. Name matching is exact:
+        the name travels verbatim in the advert payload."""
         for prefix, node in self._nodes.items():
-            if node.get("name") != name:
+            if prefix == exclude_prefix:
                 continue
-            nlat, nlon = node.get("lat"), node.get("lon")
-            if nlat is None or nlon is None:
-                continue
-            if (abs(nlat - lat) <= self.TWIN_MERGE_DEG and
-                    abs(nlon - lon) <= self.TWIN_MERGE_DEG):
+            if node.get("name") == name:
                 return prefix
         return None
 
