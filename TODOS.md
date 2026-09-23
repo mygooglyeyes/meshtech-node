@@ -25,12 +25,16 @@ are CAPPED (the existing S2 refresh budget: 2 whole-area per 30 min
 global; per-section unchanged; cap now also gates size-trimmed
 requests). Automatic pulses keep reporting the full 60x60 sections;
 the manual refresh is what trims the picture to the user's window.
-BRETT CONFIRMED 2026-09-23 ("correct"). Design revision WRITTEN:
-MAP-SIZE-DESIGN.md (8 sections: the picture, server changes,
-phone changes, the one-field wire change, limits, automatic feed
-shape, nearest-server rationale, 6-step build order). AWAITING
-Brett's line-by-line verification of that doc before anything is
-built (project rule 4).
+BRETT CONFIRMED 2026-09-23 ("correct"). Design revision WRITTEN +
+VERIFIED: MAP-SIZE-DESIGN.md (pushed). BUILD PROGRESS:
+- step 2 DONE, committed 7285b98 (NOT pushed): server span 60,
+  install asks center lat/lon instead of size, old configs boot
+  with a snap warning. Suite 240 passed.
+- NEXT: step 3 = span_km field on the refresh request (wire change,
+  codec version bump, golden vectors, both codecs) + step 4
+  (server size-trimmed reply + budget gate) + step 5 (phone setting
+  + button sends it). Then hilltop install + Brett's live test.
+NOT pushed yet - push rides the next version bump with Brett's OK.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
