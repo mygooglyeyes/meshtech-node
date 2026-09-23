@@ -238,9 +238,22 @@ def load(config_path: str) -> Settings:
                       "tiling of the area).")
         grid = 3
     span_km = _float(area_raw, "span_km", 40.0, errors, "area.span_km")
-    if span_km <= 0 or span_km > 500:
-        errors.append("area.span_km must be between 0 and 500 kilometres.")
-        span_km = 40.0
+    # MAP SIZE CHOICES (Brett, 2026-09-22): the box snaps to one of
+    # three install-menu sizes. The wire doesn't care (any span
+    # travels in the LAYOUT), but fixed choices keep the install
+    # question simple, keep delta/refresh math predictable, and make
+    # every install's cost explicit. Off-menu values snap to the
+    # nearest size (never a config error for a working file).
+    _SPAN_CHOICES = (20.0, 40.0, 60.0)
+    if span_km not in _SPAN_CHOICES:
+        snapped = min(_SPAN_CHOICES, key=lambda c: abs(c - span_km))
+        # A warning, NOT an error: an existing working install must
+        # never be refused boot because its box size is off-menu -
+        # it just snaps and says so (honesty rule: the log tells you).
+        warnings.append(
+            f"area.span_km {span_km:g} snapped to {snapped:g} (allowed: "
+            "20, 40, 60 km - the install-menu choices).")
+        span_km = snapped
     area = AreaCfg(
         name=_text(area_raw, "name", "Local area", errors, "area.name"),
         center_lat=_float(area_raw, "center_lat", 0.0, errors, "area.center_lat"),

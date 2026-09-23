@@ -219,6 +219,37 @@ guided_web_question() {
   echo "Web app will be served on port $port."
 }
 
+# guided_map_question - the map box size (Brett, 2026-09-22: 20/40/60
+# km user-configurable). Enter keeps what the config already has (40
+# on a first install). Cost lines shown in the question, plain words.
+# The value is written into config.json; the server snaps any other
+# number to the nearest choice (config.py warning), so the file stays
+# bootable no matter what.
+guided_map_question() {
+  local cj="$APPDIR/config.json"
+  local cur km
+  cur="$(grep -oE '"span_km": *[0-9.]+' "$cj" | grep -oE '[0-9.]+' | head -1)"
+  cur="${cur:-40}"
+  while true; do
+    echo
+    echo "Map box size - how wide an area the map watches (Enter = $cur):"
+    echo "  1) 20 km - sharpest detail, smallest area"
+    echo "  2) 40 km - standard (recommended)"
+    echo "  3) 60 km - biggest view, but about 2x the map packets over the"
+    echo "     air and each app update downloads more data"
+    read -rp "Map size [2]: " km
+    case "${km:-2}" in
+      1) km=20 ;;
+      2) km=40 ;;
+      3) km=60 ;;
+      *) echo "please type 1, 2 or 3"; continue ;;
+    esac
+    break
+  done
+  sed -i "s|\"span_km\": *[0-9.]*|\"span_km\": $km|" "$cj"
+  echo "Map box will be $km km across."
+}
+
 # sync_to_appdir - copy the program source into $APPDIR (the run home).
 # Preserves the installed venv, secrets, and live configs across runs.
 sync_to_appdir() {
@@ -268,6 +299,7 @@ do_install() {
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
   guided_web_question
+  guided_map_question
   sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
   sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
   echo "- writing the service file (runs from $APPDIR)"

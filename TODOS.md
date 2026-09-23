@@ -1,5 +1,27 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT, AWAITING BRETT'S COMMIT/PUSH: configurable map box 20/40/60 km (Brett, 2026-09-22)
+The map box size is now an install-menu question (after the web port
+question): 1) 20 km sharpest detail, 2) 40 km standard (recommended,
+the default), 3) 60 km biggest view with the honest cost line (~2x
+map packets over the air, more data per app update). Enter keeps the
+existing value on re-installs. Server side: config.py snaps any
+off-menu span_km to the NEAREST choice as a WARNING (never an error -
+an existing working install must still boot; 900 km -> 60). The app
+needs NO change (the size travels in the LAYOUT packet). Tests:
+3 new config tests; suite 239 passed. Files: manage.sh, config.py,
+test_config.py, deploy/config.json (40.0 -> 40 so the menu's grep
+matches). Hilltop gets it at the next install; hilltop's current
+config stays 40 until Brett changes it through the menu.
+
+## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
+Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
+logo-draft-2.svg + HTML previews, plus diagram SVGs). TODO (needs
+Brett's pick of draft): incorporate the chosen logo into the phone
+app (header + app icons replacing the current placeholder four-pane
+mark) and possibly the web terminal. Look before designing stage 2
+UI work.
+
 ## PARKED (Brett, 2026-09-21 ~23:30): protocol evolutions for later
 - DYNAMIC GRID: wire already allows 2x2..5x5 (both codecs, config);
   need install menu choices + 4x4/5x5 test vectors. Sweep cost at
@@ -11,6 +33,7 @@
   here, measured 2026-09-21).
 - ZOOM-OUT VIEW + focus-area button + user-configurable area
   center/size (20/40/60 km) - supersedes dynamic grid urgency.
+  (SIZE half is DONE above; zoom-out + center-on-config remain.)
 
 ## PHONE APP (Brett, 2026-09-21 ~23:45): design doc FIRST
 The next chapter. Design document before any code (project rule).
@@ -48,9 +71,9 @@ Live evidence: KHV Solar stored lat exactly 0.0 with good lon
 as no-position (name/hearing kept; self-heals on the next clean
 advert). 0.0/0.0 now rejected at the same choke point (was filtered
 one layer up - single point of enforcement). 5 regression tests;
-suite 237 passed. HILLTOP UPDATE (when Brett says): git pull &&
-sudo ./manage.sh install. The existing bad KHV row self-heals on its
-next clean advert; a manual db clean is available if wanted.
+suite 237 passed. LIVE ON HILLTOP since 2026-09-22 23:52 install.
+The existing bad KHV row self-heals on its next clean advert; a
+manual db clean is available if wanted.
 
 ## BUILT, AWAITING COMMIT: disk memory (Brett, 2026-09-21 ~22:00)
 The plugin's SQLite store adopted (node_store.py): nodes + repeaters
