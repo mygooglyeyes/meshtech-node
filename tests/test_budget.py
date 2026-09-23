@@ -78,3 +78,59 @@ def test_rate_limiter_acl():
     lim = RefreshRateLimiter(30.0, 10, allowed_prefixes=["aabb"])
     assert lim.allowed("aabbcc112233")
     assert not lim.allowed("ffffaabbccdd")
+
+
+# --------------------------------------- v1.3 per-size refresh caps (Brett)
+
+def test_span_caps_load_balanced():
+    """Brett's limits: 60 km = 1/h, 40 km = 2/h, 20 km = 3/h.
+    Packet math (MAP-SIZE-DESIGN section 5): 12 x 1, 7 x 2, 4 x 3 ->
+    every level ~12-14 packets/hour."""
+    lim = RefreshRateLimiter(cooldown_seconds=0.0, hourly_cap=10)
+    assert lim.span_cap(60.0) == 1
+    assert lim.span_cap(40.0) == 2
+    assert lim.span_cap(20.0) == 3
+    assert lim.span_cap(0) == 10        # legacy (no size) keeps config cap
+    assert lim.span_cap(45.0) == 2      # snapped to 40
+
+
+def test_size_buckets_are_independent():
+    """A 60 km ask never consumes a 20 km slot: buckets key on the
+    snapped size, so one client can hold one slot at each level."""
+    lim = RefreshRateLimiter(cooldown_seconds=0.0, hourly_cap=10)
+    t = 100.0
+    assert lim.allowed("aabbcc", now=t, span_km=60.0)
+    lim.record("aabbcc", now=t, span_km=60.0)
+    assert not lim.allowed("aabbcc", now=t + 1, span_km=60.0)  # 60 pool spent
+    assert lim.allowed("aabbcc", now=t + 2, span_km=40.0)      # 40 pool free
+    lim.record("aabbcc", now=t + 2, span_km=40.0)
+    assert lim.allowed("aabbcc", now=t + 3, span_km=40.0)      # 2nd of 2
+    lim.record("aabbcc", now=t + 3, span_km=40.0)
+    assert not lim.allowed("aabbcc", now=t + 4, span_km=40.0)
+    assert lim.allowed("aabbcc", now=t + 5, span_km=20.0)      # 20 pool free
+
+
+def test_span_cap_per_client_buckets():
+    """The per-client limiter buckets by size: one client's 60 km ask
+    does not consume another client's 60 km slot HERE - the GLOBAL
+    per-size pool (all clients pooled, webserve's _GlobalRefreshBudget)
+    is the layer that refuses the second client (test_webserve)."""
+    lim = RefreshRateLimiter(cooldown_seconds=0.0, hourly_cap=10)
+    t = 100.0
+    assert lim.allowed("aabbcc", now=t, span_km=60.0)
+    lim.record("aabbcc", now=t, span_km=60.0)
+    assert not lim.allowed("aabbcc", now=t + 1, span_km=60.0)  # own pool spent
+    assert lim.allowed("ddeeff", now=t + 1, span_km=60.0)      # own 60 km slot
+    # ...and either client can still ask other sizes
+    assert lim.allowed("aabbcc", now=t + 2, span_km=20.0)
+
+
+def test_legacy_unsized_refresh_unchanged():
+    """No span_km on the ask (old clients): the configured hourly cap
+    applies exactly as before v1.3."""
+    lim = RefreshRateLimiter(cooldown_seconds=0.0, hourly_cap=3)
+    t = 100.0
+    for i in range(3):
+        assert lim.allowed("aabbcc", now=t + i)
+        lim.record("aabbcc", now=t + i)
+    assert not lim.allowed("aabbcc", now=t + 10)

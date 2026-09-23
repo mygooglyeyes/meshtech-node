@@ -106,9 +106,20 @@ class RefreshRateLimiter:
     (uplink identity is unauthenticated), so the per-client maps are
     HARD-CAPPED - a flood of random prefixes evicts the oldest client
     instead of growing memory forever.
+
+    v1.3 (MAP-SIZE-DESIGN section 5, Brett 2026-09-23): the hourly cap
+    is PER SIZE - 60 km asks 1/hour, 40 km 2/hour, 20 km 3/hour - so
+    every level costs the mesh ~12-14 packets/hour (the packet math in
+    the design doc). The ledger buckets by the SNAPPED size (the same
+    snap the builder uses), so a 45 km ask draws from the 40 km pool.
+    Legacy calls with no size keep the single configured cap.
     """
 
     MAX_CLIENTS = 512
+
+    # Brett's load-balanced caps (km -> asks/hour); anything unmapped
+    # falls back to the configured cap.
+    SPAN_CAPS = {60.0: 1, 40.0: 2, 20.0: 3}
 
     def __init__(self, cooldown_seconds: float, hourly_cap: int,
                  allowed_prefixes: Optional[List[str]] = None):
@@ -116,15 +127,33 @@ class RefreshRateLimiter:
         self._cap = max(1, int(hourly_cap))
         self._allowed = [p.lower() for p in (allowed_prefixes or [])]
         self._last: Dict[str, float] = {}
-        self._hourly: Dict[str, Deque[float]] = {}
+        # hourly hits, keyed (prefix, span_bucket) - a 60 km ask never
+        # consumes a 20 km slot and vice versa.
+        self._hourly: Dict[Tuple[str, float], Deque[float]] = {}
+
+    def span_cap(self, span_km: float) -> int:
+        """The hourly cap for a window size (snapped; 0 = legacy cap)."""
+        if not span_km or span_km <= 0:
+            return self._cap
+        snapped = min(self.SPAN_CAPS, key=lambda c: abs(c - span_km))
+        return self.SPAN_CAPS.get(snapped, self._cap)
+
+    @staticmethod
+    def _snap_bucket(span_km: float) -> float:
+        if not span_km or span_km <= 0:
+            return 0.0
+        return min(RefreshRateLimiter.SPAN_CAPS,
+                   key=lambda c: abs(c - span_km))
 
     def _evict_if_needed(self) -> None:
         while len(self._last) > self.MAX_CLIENTS:
             oldest = min(self._last, key=self._last.get)
             del self._last[oldest]
-            self._hourly.pop(oldest, None)
+            for key in [k for k in self._hourly if k[0] == oldest]:
+                del self._hourly[key]
 
-    def allowed(self, client_prefix: str, *, now: Optional[float] = None) -> bool:
+    def allowed(self, client_prefix: str, *, now: Optional[float] = None,
+                span_km: float = 0.0) -> bool:
         now = time.time() if now is None else now
         prefix = client_prefix.lower()
         if self._allowed and not any(prefix.startswith(a) or a.startswith(prefix)
@@ -133,16 +162,19 @@ class RefreshRateLimiter:
         last = self._last.get(prefix)
         if last is not None and now - last < self._cooldown:
             return False
-        hits = self._hourly.setdefault(prefix, deque())
+        bucket = (prefix, self._snap_bucket(span_km))
+        hits = self._hourly.setdefault(bucket, deque())
         while hits and now - hits[0] > 3600.0:
             hits.popleft()
-        if len(hits) >= self._cap:
+        if len(hits) >= self.span_cap(span_km):
             return False
         return True
 
-    def record(self, client_prefix: str, *, now: Optional[float] = None) -> None:
+    def record(self, client_prefix: str, *, now: Optional[float] = None,
+               span_km: float = 0.0) -> None:
         now = time.time() if now is None else now
         prefix = client_prefix.lower()
         self._last[prefix] = now
-        self._hourly.setdefault(prefix, deque()).append(now)
+        bucket = (prefix, self._snap_bucket(span_km))
+        self._hourly.setdefault(bucket, deque()).append(now)
         self._evict_if_needed()

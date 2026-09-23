@@ -9,15 +9,96 @@ from meshtech_node.grid import geometry_from
 from meshtech_node.observations import Observation, RollingStore
 
 
-def make_builder(section_span_deg=0.36 / 3):
+def make_builder(section_span_deg=0.36 / 3, span_km=40.0):
     settings = Settings(area=AreaCfg(name="Test", center_lat=37.0,
-                                     center_lon=-122.0, span_km=40.0,
+                                     center_lon=-122.0, span_km=span_km,
                                      grid=3),
                         feed=FeedCfg(burst_gap_seconds=0.2))
     store = RollingStore(window_seconds=3600.0)
-    geo = geometry_from(37.0, -122.0, 40000.0, 3)
+    geo = geometry_from(37.0, -122.0, span_km * 1000.0, 3)
     budget = BudgetLimiter(RadioCfg(), 24, 1.0)
     return FeedBuilder(settings, store, geo, budget), store
+
+
+# --------------------------------------------- v1.3 sized refresh answers
+
+def test_sized_whole_area_trims_layout_and_sections():
+    """A 20 km window over a 60 km home box: the LAYOUT announces 20 km,
+    only the overlapping home sections fly, names ride the window's
+    own center (the zero-dots lesson: offsets are window-relative)."""
+    builder, store = make_builder(span_km=60.0)
+    now = time.time()
+    # two nodes: one at the center (inside every window), one at the
+    # far NE corner of the 60 km box (outside a 20 km window). Nodes
+    # enter the intro/node table via adverts (add_position), which is
+    # what an on-air advert does.
+    store.add(Observation(recv_ts=now, origin_ts=now - 2.0,
+                          prefix=0x10, lat=37.0005, lon=-122.0005,
+                          path_prefixes=[]), now=now)
+    corner = 60.0 / 2.0 / 111.32  # ~0.269 deg N and E of center
+    store.add(Observation(recv_ts=now, origin_ts=now - 2.0,
+                          prefix=0x11, lat=37.0 + corner,
+                          lon=-122.0 + corner, path_prefixes=[]), now=now)
+    store.add_position(0x10, 37.0005, -122.0005, name="Center", now=now)
+    store.add_position(0x11, 37.0 + corner, -122.0 + corner,
+                       name="Corner", now=now)
+    pkts = builder.build_refresh_response(
+        codec.REFRESH_KIND_SECTION, codec.REFRESH_WHOLE_AREA,
+        now=now, span_km=20.0)
+    kinds = [p.data_type for p in pkts]
+    layout = codec.decode_layout(
+        next(p for p in pkts if p.data_type == codec.TYPE_LAYOUT).payload[3:])
+    assert layout.span_m == 20000          # the WINDOW, not the home box
+    assert layout.center_lat == 37.0       # same center
+    assert layout.center_lon == -122.0
+    # sections carried: only the home squares overlapping 20 km. A 20 km
+    # window on a 60 km 3x3 grid (20 km squares) overlaps exactly the
+    # CENTER square (5) - the window IS one home square here.
+    assert kinds.count(codec.TYPE_SECT_SUM) == 1
+    sect = codec.decode_sect_sum(
+        next(p for p in pkts if p.data_type == codec.TYPE_SECT_SUM).payload[3:])
+    assert sect.section_id == 5            # the center square
+    assert sect.active_nodes == 1          # only the center node
+    intro = codec.decode_intro(
+        next(p for p in pkts if p.data_type == codec.TYPE_INTRO).payload[3:],
+        center_lat=layout.center_lat, center_lon=layout.center_lon,
+        span_m=layout.span_m)  # decode against the WINDOW layout
+    assert intro.span_m == 20000           # intro offsets use the window
+    # last packet is the live PULSE (service appends it; builder alone
+    # does not - the service layer owns that rule)
+    assert codec.TYPE_PULSE not in kinds
+
+
+def test_span_snaps_and_clamps_to_home_box():
+    """45 km -> 40; 999 km -> clamped to the home box (60); 0/absent ->
+    the home box itself, byte-identical behavior to before v1.3."""
+    builder, _store = make_builder(span_km=60.0)
+    geo40, km40 = builder._sized_geometry(45.0)
+    assert km40 == 40.0 and geo40.span_m == 40000
+    geo_big, km_big = builder._sized_geometry(999.0)
+    assert km_big == 60.0 and geo_big.span_m == 60000
+    geo0, km0 = builder._sized_geometry(0)
+    assert km0 == 60.0 and geo0 is builder.geometry
+
+
+def test_unsized_refresh_is_whole_home_box():
+    """span_km omitted (old clients, and the service path that has not
+    been updated): the answer covers the WHOLE home box exactly as
+    before v1.3 - no trimming by accident."""
+    builder, store = make_builder(span_km=40.0)
+    now = time.time()
+    store.add(Observation(recv_ts=now, origin_ts=now - 2.0,
+                          prefix=0x10, lat=37.0, lon=-122.0,
+                          path_prefixes=[]), now=now)
+    pkts = builder.build_refresh_response(
+        codec.REFRESH_KIND_SECTION, codec.REFRESH_WHOLE_AREA, now=now)
+    layout = codec.decode_layout(
+        next(p for p in pkts if p.data_type == codec.TYPE_LAYOUT).payload[3:])
+    assert layout.span_m == 40000
+    # layout + 9 sections, NO intro batch: the observation alone puts
+    # the node on no intro roster (roster entries come from adverts,
+    # add_position) - same as pre-v1.3 behavior for this store state
+    assert len(pkts) == 1 + 9
 
 
 def test_pulse_reflects_observations():

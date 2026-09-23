@@ -307,8 +307,59 @@ class FeedBuilder:
 
     # ------------------------------------------------------------ refresh
 
+    # Allowed client window sizes (MAP-SIZE-DESIGN section 4/5). 0 =
+    # host decides = the whole home box. Any other value snaps to the
+    # nearest allowed size - the same snap rule config.py uses, so the
+    # two sides agree by construction.
+    SPAN_CHOICES = (20.0, 40.0, 60.0)
+
+    def _sized_geometry(self, span_km: float) -> Tuple[GridGeometry, float]:
+        """Geometry for a client's requested window, snapped to the
+        allowed sizes, clamped so it can never exceed the home box.
+        Returns (geometry, snapped_km). span_km 0 = home box itself.
+
+        The window keeps the SAME CENTER as the home box (the design:
+        the server watches one box; a smaller window is just a closer
+        look at it, not a different place)."""
+        home_km = self.geometry.span_m / 1000.0
+        if not span_km or span_km <= 0:
+            return self.geometry, home_km
+        snapped = min(self.SPAN_CHOICES, key=lambda c: abs(c - span_km))
+        # A window bigger than the home box just gets the home box
+        # (honest: there is no data beyond what the server watches).
+        snapped = min(snapped, home_km)
+        sized = GridGeometry(
+            grid=self.geometry.grid,
+            center_lat=self.geometry.center_lat,
+            center_lon=self.geometry.center_lon,
+            span_m=int(snapped * 1000.0),
+        )
+        return sized, snapped
+
+    def _window_section_ids(self, sized: GridGeometry) -> List[int]:
+        """Home-box section ids that lie inside a sized window.
+
+        The window's own grid squares do NOT travel on the wire - the
+        client re-derives its sub-grid from the LAYOUT (both sides
+        derive geometry from the LAYOUT alone). But the DATA behind the
+        answer (active nodes, packets, routes) is bucketed into HOME
+        sections, so a sized answer needs the home sections that
+        overlap the window, in home numbering."""
+        ids: List[int] = []
+        for sid in range(1, self.geometry.section_count + 1):
+            s = self.geometry.section(sid)
+            # STRICT overlap: edge-touching (s.east == window.west)
+            # shares a line, not an area - a square that only touches
+            # the window border carries no inside data.
+            if not (s.east > sized.west and s.west < sized.east and
+                    s.north > sized.south and s.south < sized.north):
+                continue
+            ids.append(sid)
+        return ids
+
     def build_refresh_response(self, kind: int, target: int, *,
-                               now: Optional[float] = None) -> List[OutPacket]:
+                               now: Optional[float] = None,
+                               span_km: float = 0.0) -> List[OutPacket]:
         """Packets answering one REFRESH_REQ (section or route).
 
         PROTOCOL v1.2: section targets are 1-based (1 = NW .. 9 = SE)
@@ -318,16 +369,24 @@ class FeedBuilder:
         through the section range check as section 0, so "Refresh map"
         fetched only the NW square; 2026-09-18 made 0 mean whole-area;
         2026-09-20 made the whole numbering 1-based so the wire, the
-        logs, and the screens all agree.)"""
+        logs, and the screens all agree.)
+
+        v1.3 (MAP-SIZE-DESIGN, Brett 2026-09-23): span_km trims the
+        answer to the client's window (20/40/60, snapped; 0/absent =
+        the whole home box exactly as before). The LAYOUT carries the
+        window's size, so the client draws only that. Airtime saved is
+        the honest reward for asking small; the BUDGET cost of the
+        request is unchanged (service-side, one limiter)."""
         now = time.time() if now is None else now
+        sized, _km = self._sized_geometry(span_km)
         out: List[OutPacket] = []
         if kind == codec.REFRESH_KIND_SECTION:
             if target == codec.REFRESH_WHOLE_AREA:
-                out.append(self.build_layout(now=now))
-                for sid in range(1, self.geometry.section_count + 1):
+                out.append(self._build_layout_for(sized, now=now))
+                for sid in self._window_section_ids(sized):
                     out.append(self.build_sect_sum(sid, now=now,
                                                    top_routes=[]))
-                pkt = self.build_intro_batch(now=now)
+                pkt = self._build_intro_for(sized, now=now)
                 if pkt:
                     out.append(pkt)
                 return out
@@ -339,7 +398,7 @@ class FeedBuilder:
                 pkt = self.build_route(target, path, now=now)
                 if pkt:
                     out.append(pkt)
-            pkt = self.build_intro_batch(now=now)
+            pkt = self._build_intro_for(sized, now=now)
             if pkt:
                 out.append(pkt)
         elif kind == codec.REFRESH_KIND_ROUTE:
@@ -355,6 +414,78 @@ class FeedBuilder:
                 if out:
                     break
         return out
+
+    def _build_layout_for(self, sized: GridGeometry, *,
+                          now: float) -> OutPacket:
+        """A LAYOUT announcing the WINDOW (same center, window span)."""
+        area = self.settings.area
+        layout = codec.Layout(
+            seq=self._next_seq(),
+            grid=sized.grid,
+            center_lat=sized.center_lat,
+            center_lon=sized.center_lon,
+            span_m=int(sized.span_m),
+            origin=self.origin,
+            name=area.name[:codec.MAX_NAME],
+        )
+        return OutPacket(codec.TYPE_LAYOUT, codec.encode_layout(layout),
+                         "layout")
+
+    def _build_intro_for(self, sized: GridGeometry, *,
+                         now: float) -> Optional[OutPacket]:
+        """An INTRO batch whose offsets are relative to the WINDOW's
+        center (the client projects names/positions off the LAYOUT it
+        just received - sending home-center offsets with a window
+        layout would place every dot wrong; the zero-dots lesson)."""
+        area = self.settings.area
+        intro = codec.Intro(seq=self._next_seq(), origin=self.origin,
+                            center_lat=sized.center_lat,
+                            center_lon=sized.center_lon,
+                            span_m=sized.span_m)
+        entries: List[codec.IntroEntry] = []
+        body_len = 1
+        known = sorted(self.store.known_nodes())
+        positioned, plain = [], []
+        for prefix in known:
+            info = self.store.node_info(prefix) or {}
+            if info.get("lat") is not None and info.get("lon") is not None:
+                positioned.append(prefix)
+            else:
+                plain.append(prefix)
+        ordered_all = positioned + plain
+        c = self._intro_cursor % max(1, len(ordered_all))
+        ordered = ordered_all[c:] + ordered_all[:c]
+        for prefix in ordered:
+            info = self.store.node_info(prefix) or {}
+            name = info.get("name")
+            entry = codec.IntroEntry(
+                prefix=prefix,
+                name=str(name)[:codec.MAX_NAME] if name else None,
+                lat=info.get("lat"),
+                lon=info.get("lon"),
+                node_class=int(info.get("node_class") or 0) & 0x3,
+            )
+            size = 3 + len((entry.name or "").encode("utf-8")[:codec.MAX_NAME])
+            if entry.lat is not None:
+                size += 4
+            if body_len + size > MAX_INTRO_BYTES:
+                break
+            entries.append(entry)
+            body_len += size
+        if not entries:
+            self._intro_cursor = 0
+            return None
+        intro.entries = entries
+        self._intro_cursor += len(entries)
+        pkt = codec.encode_intro(intro)
+        if len(pkt) > codec.TARGET_PAYLOAD:
+            while intro.entries and len(codec.encode_intro(intro)) \
+                    > codec.TARGET_PAYLOAD:
+                intro.entries.pop()
+            if not intro.entries:
+                return None
+            pkt = codec.encode_intro(intro)
+        return OutPacket(codec.TYPE_INTRO, pkt, "background")
 
     # ------------------------------------------------------------ snapshot
 

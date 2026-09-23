@@ -33,7 +33,7 @@ import secrets
 import struct
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from aiohttp import WSMsgType, web
 
@@ -145,6 +145,19 @@ class WebServe:
         self.on_client_connected = on_client_connected
         self.feed_info = feed_info or {}
         self.map_budget = _GlobalRefreshBudget()
+        # v1.3 per-size global pools (MAP-SIZE-DESIGN section 5): keyed
+        # by the client's snapped window size. A missing key is created
+        # on first use with that size's own allowance.
+        self.map_budgets: Dict[float, _GlobalRefreshBudget] = {
+            0.0: self.map_budget,   # unsized/legacy asks share the old pool
+        }
+        # Brett's load-balanced hourly allowances by window size.
+        # Window 30 min like the legacy budget: a 60 km ask (1/h) =
+        # 1 per 30-min window, 40 km (2/h) = 2... wait - the design
+        # says PER HOUR; the window here stays 30 min per the legacy
+        # shape, so the per-30-min allowance is HALF the hourly cap
+        # (rounded up) to keep the sliding window honest at both scales.
+        self._span_hourly = {60.0: 1, 40.0: 2, 20.0: 3}
         # state_provider = the brain's honest state snapshot (listener
         # + feed truth the BLE path can never see); None -> nulls.
         self.state_provider = state_provider
@@ -160,6 +173,14 @@ class WebServe:
         self.app = web.Application()
         self.app.router.add_get("/feed", self._ws_handler)
         self._runner: Optional[web.AppRunner] = None
+
+    def _span_budget(self, span_km: float) -> int:
+        """Per-30-min allowance for a window size: half its hourly cap,
+        minimum 1. (Legacy 0.0 pool keeps the old 2-per-30-min.)"""
+        if not span_km or span_km <= 0:
+            return 2
+        hourly = self._span_hourly.get(round(span_km), 1)
+        return max(1, hourly // 2 + (hourly % 2))
 
     @property
     def current_req_id(self) -> Optional[str]:
@@ -360,6 +381,7 @@ class WebServe:
 
     async def _client_msg(self, ws, obj: dict, conn_id: str = "ws") -> None:
         mtype = obj.get("type")
+        span_km = 0.0   # v1.3 window; set by map/section asks below
         if mtype == "ping":
             await self._send(ws, {"type": "pong",
                                   "now": time.time()})
@@ -384,6 +406,13 @@ class WebServe:
                 kind = codec.REFRESH_KIND_SECTION
                 target = codec.REFRESH_WHOLE_AREA
                 is_map = True
+                # v1.3 (MAP-SIZE-DESIGN): the ask may carry the client's
+                # wanted window (20/40/60 km; absent/0 = host decides).
+                # Passed to the brain in the RefreshReq; the global map
+                # budget POOLS PER SIZE below.
+                span_raw = obj.get("span_km", 0)
+                span_km = float(span_raw) if \
+                    isinstance(span_raw, (int, float)) and span_raw > 0 else 0.0
             elif kind_s == "section":
                 kind = codec.REFRESH_KIND_SECTION
                 target = obj.get("section")
@@ -392,6 +421,12 @@ class WebServe:
                         not 0 <= target <= 9:
                     return
                 is_map = target == codec.REFRESH_WHOLE_AREA
+                # v1.3: a section ask may also carry the wanted window
+                # (used for the trimmed intro batch); target-0 section
+                # asks are whole-map and pool below like "map".
+                span_raw = obj.get("span_km", 0)
+                span_km = float(span_raw) if \
+                    isinstance(span_raw, (int, float)) and span_raw > 0 else 0.0
             else:
                 return
             # S2, closed 2026-09-20: ANY target-0 refresh means
@@ -409,21 +444,30 @@ class WebServe:
                                       "accepted": False,
                                       "reason": "listen_only"})
                 return
-            if target == codec.REFRESH_WHOLE_AREA and \
-                    not self.map_budget.allow():
-                wait = self.map_budget.retry_after_s()
-                log.info("whole-map refresh refused - global budget "
-                         "spent, %ds until the next slot", wait)
-                await self._send(ws, {"type": "ack",
-                                      "req_id": req_id,
-                                      "accepted": False,
-                                      "reason": "map_budget",
-                                      "retry_after_s": wait})
-                return
+            if target == codec.REFRESH_WHOLE_AREA:
+                # Per-size global pools (Brett 2026-09-23): each window
+                # size has its own allowance (60 km 1/h, 40 km 2/h,
+                # 20 km 3/h) shared across ALL connections, so pooled
+                # browsers cannot mint req-ids around it. Sizes pool
+                # separately - a 20 km ask never consumes a 60 km slot.
+                pool = self.map_budgets.setdefault(
+                    span_km, _GlobalRefreshBudget(
+                        max_per_window=self._span_budget(span_km)))
+                if not pool.allow():
+                    wait = pool.retry_after_s()
+                    log.info("%gkm map refresh refused - global budget "
+                             "spent, %ds until the next slot", span_km, wait)
+                    await self._send(ws, {"type": "ack",
+                                          "req_id": req_id,
+                                          "accepted": False,
+                                          "reason": "map_budget",
+                                          "retry_after_s": wait})
+                    return
             nonce = secrets.randbits(16)
             req = codec.RefreshReq(seq=nonce, kind=kind, target=target,
                                    nonce=nonce,
-                                   origin=int(obj.get("origin", 0)) & 0xFFFF)
+                                   origin=int(obj.get("origin", 0)) & 0xFFFF,
+                                   span_km=int(span_km))
             if self.on_refresh is not None:
                 self._req_stack.append(req_id)
                 try:

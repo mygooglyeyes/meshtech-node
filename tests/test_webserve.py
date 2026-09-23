@@ -272,3 +272,51 @@ def test_state_snapshot_honest_when_silent():
     assert snap["listener"]["nodes_active"] == 0
     assert snap["feed"]["last_pulse_ts"] is None
     assert snap["feed"]["next_pulse_ts"] is None
+
+
+@pytest.mark.asyncio
+async def test_map_budget_pools_per_size(bench_pair):
+    """v1.3 (Brett): each window size has its OWN global pool - 60 km
+    (1 per 30 min), 40 km (2), 20 km (3). A spent 60 km pool refuses
+    the next 60 km ask from ANY connection but never blocks a 20 km
+    ask. Unsized asks keep the legacy 2-per-30-min pool."""
+    serve, brain, source, sender, url = bench_pair
+    brain_task = asyncio.create_task(brain.run())
+    try:
+        async with WSClient(url) as ws:
+            await ws.recv()
+            await ws.recv()
+            # spend the whole 60 km pool (1 per 30-min window). Frames
+            # arrive burst-first, ack LAST (the ack follows dispatch) -
+            # wait for the ack wherever it lands in the stream.
+            await ws.send({"type": "refresh", "req_id": "s60a",
+                           "kind": "map", "span_km": 60})
+            for _ in range(40):
+                msg = await ws.recv(timeout=10)
+                if msg["type"] == "ack":
+                    break
+            assert msg.get("accepted") is True
+            # next 60 km ask: refused by the 60 km pool (refusal ack,
+            # nothing else - so the NEXT ack frame is the refusal)
+            await ws.send({"type": "refresh", "req_id": "s60b",
+                           "kind": "map", "span_km": 60})
+            got_refusal = False
+            for _ in range(40):
+                msg = await ws.recv(timeout=10)
+                if msg["type"] == "ack":
+                    got_refusal = not msg.get("accepted")
+                    break
+            assert got_refusal, "second 60km ask must be refused"
+            # a 20 km ask is untouched by the 60 km pool (its burst
+            # flows, then the ack)
+            await ws.send({"type": "refresh", "req_id": "s20a",
+                           "kind": "map", "span_km": 20})
+            got_ok = False
+            for _ in range(40):
+                msg = await ws.recv(timeout=10)
+                if msg["type"] == "ack":
+                    got_ok = bool(msg.get("accepted"))
+                    break
+            assert got_ok, "20km pool must be independent"
+    finally:
+        brain_task.cancel()
