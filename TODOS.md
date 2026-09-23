@@ -13,19 +13,25 @@ needs NO change (the size travels in the LAYOUT packet). Tests:
 (git pull && sudo ./manage.sh install) is the live test - question
 should appear after the port question, Enter should keep 40 km.
 
-## DESIGN QUESTION (Brett, 2026-09-23): coordination + differing home areas
-Brett's future goal: a user can ASK for a map update and the NEAREST
-scope server replies - so many servers, each with its own home area.
-Question raised: do differing home-area SIZES (20/40/60 per server)
-make that disjointed? Working answer: centers ALREADY differ per
-server by design (nearest = its own neighborhood); size differing is
-the same kind of variation and the phone already draws whatever the
-LAYOUT announces. The common 20/40/60 menu KEEPS phone rendering
-predictable across servers. The REAL open design question: stitching
-many servers' boxes into one continuous/zoomable view when traveling
-(overlaps, node dedupe, which box wins). Belongs in the
-PHONE-APP-DESIGN.md next revision + zoom-out-view design, NOT built
-now. Brett's verdict on the framing: PENDING.
+## DESIGN DECIDED (Brett, 2026-09-23): full 60x60 home area + per-phone refresh size
+Brett's verdict on coordination vs differing home areas: EVERY scope
+server watches its ENTIRE 60x60 km home area (no more 20/40/60
+install choice for the server). The PHONE remembers the size the user
+chose (20/40/60, client setting); a MANUAL MAP REFRESH carries the
+user's size, and the server sends the data for THAT size around the
+same center - we already store every node's position, filtering a
+window is cheap on the server. Budget stays guarded: manual refreshes
+are CAPPED (the existing S2 refresh budget: 2 whole-area per 30 min
+global; per-section unchanged; cap now also gates size-trimmed
+requests). Automatic pulses keep reporting the full 60x60 sections;
+the manual refresh is what trims the picture to the user's window.
+BRETT CONFIRMED 2026-09-23 ("correct"). Build order: DESIGN-DOC
+REVISION FIRST (project rule 4), covering: the 60x60 server default
+(install menu loses the size question or it becomes the phone's
+setting), the refresh-request size field (wire change, codec version
+bump), the size-trimmed reply, and the multi-server stitching for the
+nearest-server future. NOT BUILT YET - awaiting Brett's go to write
+the doc revision.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
