@@ -41,14 +41,16 @@ openhop repeater's node db? That measures coverage, not hearing.
 Second lever: import CONTACTS from the companion radio (its saved
 node list) to fill the db for nodes whose adverts we've never caught.
 
-## COMMITTED (2026-09-22, 2b62762 - NOT PUSHED, no version bump yet): half-fix guard
+## PUSHED (2026-09-22): half-fix guard = v00.000.033 (tag v00.000.033)
 A torn advert (RF bit errors) can corrupt ONE half of a GPS fix.
 Live evidence: KHV Solar stored lat exactly 0.0 with good lon
 -121.908836. Guard: a position with ANY exact-zero half is rejected
 as no-position (name/hearing kept; self-heals on the next clean
 advert). 0.0/0.0 now rejected at the same choke point (was filtered
 one layer up - single point of enforcement). 5 regression tests;
-suite 237 passed.
+suite 237 passed. HILLTOP UPDATE (when Brett says): git pull &&
+sudo ./manage.sh install. The existing bad KHV row self-heals on its
+next clean advert; a manual db clean is available if wanted.
 
 ## BUILT, AWAITING COMMIT: disk memory (Brett, 2026-09-21 ~22:00)
 The plugin's SQLite store adopted (node_store.py): nodes + repeaters
