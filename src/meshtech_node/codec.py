@@ -19,7 +19,18 @@ from typing import List, Optional, Tuple
 # means "whole-area" in a REFRESH_REQ target; a SECT_SUM/ROUTE with
 # section_id 0 is malformed and rejected at decode. Header layout is
 # unchanged from v1.1 (version + seq + origin).
-PROTO_VERSION = 0x03
+# v1.3 (0x04, 2026-09-23, MAP-SIZE-DESIGN.md): REFRESH_REQ gains an
+# optional span_km field (2 LE, kilometres) so a client can ask for a
+# 20/40/60 km window of the host's 60x60 home area. 0 = host decides
+# (= the whole home box, today's behavior). Older encoders that omit
+# the field decode as span_km=0. Header layout unchanged.
+PROTO_VERSION = 0x04
+
+# Allowed client window sizes for a refresh (MAP-SIZE-DESIGN section
+# 4): 0 = host decides. The snap-to-nearest choice lives in the
+# callers (config/service), not the codec - the wire just carries the
+# number.
+REFRESH_SPAN_HOST_DECIDES = 0
 
 # REFRESH_REQ target 0 = WHOLE-AREA refresh (any kind): the answer is
 # LAYOUT + one summary per section + node names. Section targets are
@@ -106,7 +117,7 @@ def unpack_header(payload: bytes, offset: int = 0) -> Tuple[Header, int]:
         # v1 packet: 3-byte header, no origin field.
         seq = struct.unpack_from("<H", payload, offset + 1)[0]
         return Header(version=version, seq=seq, origin=0), offset + 3
-    if version not in (0x02, 0x03):
+    if version not in (0x02, 0x03, 0x04):
         # STRICT: an unknown version must not be silently read with the
         # wrong field widths (0x01 = 3-byte, 0x02+ = 5-byte). A loud
         # error beats a confident misread.
@@ -497,6 +508,10 @@ class RefreshReq:
     nonce: int
     origin: int = 0    # client's own 2-byte id (v1.1)
     host: int = REFRESH_HOST_ANY  # preferred origin, 0 = owner decides
+    # v1.3: the window the client wants, in km (20/40/60). 0 = host
+    # decides = the whole 60x60 home box (today's behavior, and what
+    # every pre-v1.3 encoder means when it omits the field).
+    span_km: int = REFRESH_SPAN_HOST_DECIDES
 
 
 def encode_refresh_req(r: RefreshReq) -> bytes:
@@ -505,25 +520,39 @@ def encode_refresh_req(r: RefreshReq) -> bytes:
     body = pack_header(r.seq, r.origin)
     body += struct.pack("<BHHH", r.kind, _u16(r.target, "target"),
                         _u16(r.host, "host"), _u16(r.nonce, "nonce"))
+    # v1.3 (0x04): + span_km(2 LE). The version byte in the header is
+    # what tells an old decoder "this body is longer than you think" -
+    # and a strict old decoder REJECTS it loudly rather than misreads
+    # (the same rule that guards unknown versions against us).
+    body += struct.pack("<H", _u16(r.span_km, "span_km"))
     return data_type_bytes(TYPE_REFRESH_REQ, body)
 
 
 def decode_refresh_req(payload: bytes) -> RefreshReq:
     header, off = unpack_header(payload)
-    if header.version >= 0x02:
-        # v1.1 body: kind(1) target(2) host(2) nonce(2)
+    if header.version >= 0x04:
+        # v1.3 body: kind(1) target(2) host(2) nonce(2) span_km(2)
+        if len(payload) < off + 9:
+            raise CodecError("REFRESH_REQ too short")
+        kind, target, host = struct.unpack_from("<BHH", payload, off)
+        nonce, span_km = struct.unpack_from("<HH", payload, off + 5)
+    elif header.version >= 0x02:
+        # v1.1 body: kind(1) target(2) host(2) nonce(2), no span_km
         if len(payload) < off + 7:
             raise CodecError("REFRESH_REQ too short")
         kind, target, host = struct.unpack_from("<BHH", payload, off)
         nonce = struct.unpack_from("<H", payload, off + 5)[0]
+        span_km = REFRESH_SPAN_HOST_DECIDES
     else:
         # v1 body: kind(1) target(2) nonce(2), no host field
         if len(payload) < off + 5:
             raise CodecError("REFRESH_REQ too short")
         kind, target, nonce = struct.unpack_from("<BHH", payload, off)
         host = REFRESH_HOST_ANY
+        span_km = REFRESH_SPAN_HOST_DECIDES
     return RefreshReq(seq=header.seq, kind=kind, target=target,
-                      nonce=nonce, origin=header.origin, host=host)
+                      nonce=nonce, origin=header.origin, host=host,
+                      span_km=span_km)
 
 
 # --------------------------------------------------------------------------
