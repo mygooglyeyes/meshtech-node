@@ -8,28 +8,31 @@
        direct mode's feed link replaces the companion-radio link, so the
        page connects to the HOST NODE's ws:// address, not its own origin.
        Only ws:// is opened to the network; scripts/styles/forms stay self. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-IMX6UJL759Zrdd2wq0iOrBGmqtbjuDWuWc3wVtD6HJM='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>MeshTech Scope</title>
   <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Scope" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
 </head>
 <body>
   <header>
     <h1>MeshTech Scope</h1>
     <select id="source-mode" aria-label="Packet source">
-      <option value="radio">Radio (BLE companion)</option>
-      <option value="direct">Direct (meshtech-node)</option>
+      <option value="radio">BLE</option>
+      <option value="direct">TCP</option>
     </select>
     <span id="conn-state" data-state="disconnected">disconnected</span>
     <button id="connect" class="primary">Connect</button>
+    <input id="radio-name" placeholder="Radio name" />
   </header>
   <main>
-    <div class="inputrow">
-      <input id="radio-name" placeholder="Radio name (optional, e.g. T-Beam)" />
-    </div>
     <div class="inputrow" id="node-link-row" hidden>
       <input id="node-host" placeholder="Host node address (e.g. 192.168.12.145)" />
       <input id="node-token" type="password" placeholder="Data-door password (once)" />
-      <button id="refresh-map">Request map refresh</button>
     </div>
     <div id="app-inner"></div>
     <div class="card">
@@ -39,5 +42,35 @@
   </main>
   <link rel="stylesheet" href="./app.css" />
   <script type="module" src="./app.js"></script>
+  <!-- Stage 1 (2026-09-22): the worker existed since the security
+       review but was never REGISTERED, so the app was never
+       installable. Register from the served origin only (sw.js is
+       same-origin by definition); failure is logged, never fatal. -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        // updateViaCache "none": the browser must NOT serve sw.js from
+        // its own HTTP cache - with header-less servers (python
+        // http.server, and hilltop's static handler) a stale worker
+        // could otherwise pin the OLD app forever (the 2026-09-21
+        // Ctrl+F5 wedge, root-caused 2026-09-22). check on every load.
+        navigator.serviceWorker.register("./sw.js", {updateViaCache: "none"})
+          .then((reg) => {
+            if (reg.waiting) reg.waiting.postMessage({type: "SKIP_WAITING"});
+            reg.addEventListener("updatefound", () => {
+              const w = reg.installing;
+              if (!w) return;
+              w.addEventListener("statechange", () => {
+                if (w.state === "installed" && navigator.serviceWorker.controller) {
+                  w.postMessage({type: "SKIP_WAITING"});
+                }
+              });
+            });
+          })
+          .catch((err) =>
+            console.warn("service worker registration skipped:", String(err)));
+      });
+    }
+  </script>
 </body>
 </html>
