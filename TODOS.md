@@ -43,10 +43,13 @@ VERIFIED: MAP-SIZE-DESIGN.md (pushed). BUILD PROGRESS:
   40 km = 2/hour, 20 km = 3/hour. Packet math: each level lands at
   ~12-14 packets/hour (~1.3-1.5 s airtime), level with each other and
   inside the ~34/h headroom. MAP-SIZE-DESIGN.md section 5 updated.
-- NEXT: step 5 = phone setting + button sends spanKm + per-size caps
-  wired (service limiter picks cap by snapped size; global budget
-  pools per size). Then push, hilltop install, Brett's live test.
-NOT pushed yet - push rides the next version bump with Brett's OK.
+- step 5 DONE, committed phone repo e5ec3e3 (branches synced, not
+  pushed): Map size selector on the map card (20/40/60, remembered,
+  caps shown on the options), whole-map refresh sends spanKm on wire
+  + direct message. All phone lib tests green, build clean.
+ALL 5 STEPS BUILT. Remaining: Brett's push word (both repos),
+hilltop install + Ctrl+F5 + reconnect, then Brett's live test
+(selector visible, sized refresh trims the answer, caps hold).
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
