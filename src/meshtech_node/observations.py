@@ -133,10 +133,27 @@ class RollingStore:
                      now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
         node = self._nodes.setdefault(prefix, {})
-        if abs(lat) > self.LAT_MAX or abs(lon) > self.LON_MAX:
-            log.warning("position REJECTED as corruption: prefix %02x "
-                        "claimed (%.4f, %.4f) - outside the planet; "
-                        "stored as no-position", prefix, lat, lon)
+        # HALF-FIX GUARD (2026-09-22, KHV Solar live): a torn advert
+        # (RF bit errors) can corrupt ONE half of the fix. The evidence:
+        # latitude stored as exactly 0.0 (the equator) while the
+        # longitude decoded fine (-121.9 San Jose area) - a "position"
+        # in the Gulf of Guinea. A REAL fix has both halves credible;
+        # one exact 0.0 against a non-zero partner is corruption. Same
+        # honest answer as the planet-range guard: no-position (the
+        # name/hearing evidence stays real). 0.0/0.0 (null island) is
+        # rejected here too - it used to be filtered one layer up; the
+        # guard is the single choke point now, so no caller can forget.
+        half_fix = lat == 0.0 or lon == 0.0
+        if abs(lat) > self.LAT_MAX or abs(lon) > self.LON_MAX or half_fix:
+            if half_fix:
+                log.warning("position REJECTED as half-corrupt: prefix %02x "
+                            "claimed (%.4f, %.4f) - one half is the torn-"
+                            "advert zero; stored as no-position", prefix,
+                            lat, lon)
+            else:
+                log.warning("position REJECTED as corruption: prefix %02x "
+                            "claimed (%.4f, %.4f) - outside the planet; "
+                            "stored as no-position", prefix, lat, lon)
             # The corrupt position is dropped, but everything else in
             # the advert is real evidence (name, hearing) and the node
             # still counts as heard (C3).

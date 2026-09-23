@@ -67,3 +67,57 @@ def test_good_advert_after_corrupt_one_wins(tmp_path):
     row = disk.node_rows()[0]
     assert abs(row["lat"] - 38.1074) < 1e-6
     assert row["name"] == "NowReal"
+
+
+# ---- HALF-FIX GUARD (2026-09-22, KHV Solar live) -------------------------
+# A torn advert can corrupt ONE half of the fix: KHV Solar stored
+# lat exactly 0.0 with a good lon -121.908836. One exact 0.0 against a
+# non-zero partner is corruption, not the equator.
+
+def test_half_fix_lat_zero_good_lon_rejected(tmp_path):
+    """KHV Solar's actual torn advert: lat 0.0, lon -121.9 -> no-position."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x21, 0.0, -121.908836, "KHV Solar RAK Repeater",
+                     now=now)
+    info = ram.node_info(0x21)
+    assert info.get("lat") is None and info.get("lon") is None
+    assert info["name"] == "KHV Solar RAK Repeater"   # hearing evidence stays
+    row = disk.node_rows()[0]
+    assert row["lat"] is None and row["lon"] is None
+    assert row["name"] == "KHV Solar RAK Repeater"
+
+
+def test_half_fix_lon_zero_good_lat_rejected(tmp_path):
+    """Mirror case: good lat, lon torn to exactly 0.0 -> no-position."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x22, 37.4419, 0.0, "TornLon", now=now)
+    info = ram.node_info(0x22)
+    assert info.get("lat") is None and info.get("lon") is None
+
+
+def test_true_null_island_still_rejected(tmp_path):
+    """0.0/0.0 stays no-position (pre-existing rule, both-zero case)."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x23, 0.0, 0.0, "NullIsland", now=now)
+    info = ram.node_info(0x23)
+    assert info.get("lat") is None and info.get("lon") is None
+
+
+def test_good_fix_still_stored_next_to_half_fixes(tmp_path):
+    """The guard must not overreach: a normal Novato fix stores fine."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x3e, 38.09191, -122.566098, "Oakview", now=now)
+    assert abs(ram.node_info(0x3e)["lat"] - 38.09191) < 1e-9
+
+
+def test_half_fix_then_good_advert_wins(tmp_path):
+    """Self-healing: KHV Solar's next clean advert stores for real."""
+    ram, disk = _store(tmp_path)
+    now = time.time()
+    ram.add_position(0x21, 0.0, -121.908836, None, now=now)
+    ram.add_position(0x21, 37.3, -121.9, None, now=now + 5)
+    assert abs(ram.node_info(0x21)["lat"] - 37.3) < 1e-9
