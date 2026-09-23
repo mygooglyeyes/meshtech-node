@@ -1,5 +1,27 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PARKED (Brett, 2026-09-21 ~23:30): protocol evolutions for later
+- DYNAMIC GRID: wire already allows 2x2..5x5 (both codecs, config);
+  need install menu choices + 4x4/5x5 test vectors. Sweep cost at
+  5x5 = 25 sections (2.1 h full sweep); refresh = 26 packets.
+- DELTA UPDATES: send only CHANGED section counts per pulse (counts
+  rarely change between beats). Fewer/smaller packets = the only real
+  airtime win (preamble ~110 ms per packet is the fixed cost; zlib
+  GROWS our 26-109 B packets - classic compression is the wrong tool
+  here, measured 2026-09-21).
+- ZOOM-OUT VIEW + focus-area button + user-configurable area
+  center/size (20/40/60 km) - supersedes dynamic grid urgency.
+
+## PHONE APP (Brett, 2026-09-21 ~23:45): design doc FIRST
+The next chapter. Design document before any code (project rule).
+Existing material to plan from: PHONE-CONNECT.md (connect sequence,
+5/hour ledger, cache-first, honest ages - all approved), PROJECT.md
+end goal, companion mode (the PC sim), scope-app renderer (reusable).
+OPEN QUESTIONS for Brett before writing: (1) transport - BLE to a
+companion radio, WiFi/TCP like the PC sim, or both? (2) app tech -
+PWA (same web app), native, or wrapper? (3) companion radio hardware
+- what are we building toward?
+
 ## WATCH (Brett, 2026-09-21 ~22:30): are we hearing ALL the packets?
 "I know there are more than 49 active nodes... the plugin was getting
 far more hits." Research done: our RX chain has NO filters - the chip
@@ -18,6 +40,15 @@ was easier then. Compare: how many of OUR known nodes appear in the
 openhop repeater's node db? That measures coverage, not hearing.
 Second lever: import CONTACTS from the companion radio (its saved
 node list) to fill the db for nodes whose adverts we've never caught.
+
+## COMMITTED (2026-09-22, 2b62762 - NOT PUSHED, no version bump yet): half-fix guard
+A torn advert (RF bit errors) can corrupt ONE half of a GPS fix.
+Live evidence: KHV Solar stored lat exactly 0.0 with good lon
+-121.908836. Guard: a position with ANY exact-zero half is rejected
+as no-position (name/hearing kept; self-heals on the next clean
+advert). 0.0/0.0 now rejected at the same choke point (was filtered
+one layer up - single point of enforcement). 5 regression tests;
+suite 237 passed.
 
 ## BUILT, AWAITING COMMIT: disk memory (Brett, 2026-09-21 ~22:00)
 The plugin's SQLite store adopted (node_store.py): nodes + repeaters
