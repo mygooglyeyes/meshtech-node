@@ -13,6 +13,12 @@ NOTE: box still on v40; first update run will honestly say "already at
 the newest code (version 40)" and skip the restart - that IS the safe
 live test. Box needs ONE more manual git pull to receive this manage.sh.
 NEXT: Brett pulls once + runs sudo ./manage.sh update as the test.
+LIVE-TESTED (2026-09-23 16:52, Brett on hilltop): manual pull, ran
+update from the menu -> "already at the newest code (version
+00.000.040; the installed copy matches). Nothing to do." - the no-op
+path works on the box. His manual restart was harmless; service came
+back clean (radio up, 246 nodes refilled). REAL TEST = the next
+release: update should pull + copy + restart with zero questions.
 
 ## PUSHED (2026-09-23, Brett's word "commit and push"): name-supersede
 ## replaces the twin merge = node v00.000.040 / phone v00.000.008
