@@ -51,9 +51,17 @@ ALL 5 STEPS BUILT + PUSHED (2026-09-23, Brett's word): node =
 v00.000.036 (tag pushed, all 5 local branch mirrors fast-forwarded
 to main), phone = v00.000.004 (tag pushed; all 7 branches synced -
 tools was repaired to its remote merge-lineage then merged with
-main). Remaining: hilltop install of v36 + Ctrl+F5 + reconnect,
-then Brett's live test (selector visible, sized refresh trims the
-answer, caps hold).
+main). v36 INSTALLED on hilltop 2026-09-23 08:22 (server half verified:
+home-area question, Enter kept center, box bumped to 60, service
+clean). LIVE TEST FOUND A BUG: the 1s housekeeping timer re-rendered
+the whole page, snapping the Map size dropdown shut (Brett: whole
+page flashes ~1/s). FIXED (tick-only clock: timer updates just the
+pulse-age text) -> node v00.000.037 / phone v00.000.005, pushed,
+served copy refreshed via repaired sync_to_node (it still pointed at
+the pre-restructure web/ layout). android/apple phone branches left
+alone (unique stage-2 work, self-consistent with remotes). Remaining:
+hilltop install of v37 + Ctrl+F5 + reconnect, then the dropdown live
+test (selector opens and STAYS open, pick sticks, refresh trims).
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
