@@ -1,6 +1,6 @@
 # meshtech-node - TODOS (order matters, top first)
 
-## BUILT, AWAITING BRETT'S COMMIT/PUSH: configurable map box 20/40/60 km (Brett, 2026-09-22)
+## PUSHED (2026-09-23): configurable map box 20/40/60 km = v00.000.034
 The map box size is now an install-menu question (after the web port
 question): 1) 20 km sharpest detail, 2) 40 km standard (recommended,
 the default), 3) 60 km biggest view with the honest cost line (~2x
@@ -9,10 +9,9 @@ existing value on re-installs. Server side: config.py snaps any
 off-menu span_km to the NEAREST choice as a WARNING (never an error -
 an existing working install must still boot; 900 km -> 60). The app
 needs NO change (the size travels in the LAYOUT packet). Tests:
-3 new config tests; suite 239 passed. Files: manage.sh, config.py,
-test_config.py, deploy/config.json (40.0 -> 40 so the menu's grep
-matches). Hilltop gets it at the next install; hilltop's current
-config stays 40 until Brett changes it through the menu.
+3 new config tests; suite 239 passed. NEXT: Brett's hilltop install
+(git pull && sudo ./manage.sh install) is the live test - question
+should appear after the port question, Enter should keep 40 km.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
