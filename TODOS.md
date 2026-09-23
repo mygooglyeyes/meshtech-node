@@ -13,6 +13,20 @@ needs NO change (the size travels in the LAYOUT packet). Tests:
 (git pull && sudo ./manage.sh install) is the live test - question
 should appear after the port question, Enter should keep 40 km.
 
+## DESIGN QUESTION (Brett, 2026-09-23): coordination + differing home areas
+Brett's future goal: a user can ASK for a map update and the NEAREST
+scope server replies - so many servers, each with its own home area.
+Question raised: do differing home-area SIZES (20/40/60 per server)
+make that disjointed? Working answer: centers ALREADY differ per
+server by design (nearest = its own neighborhood); size differing is
+the same kind of variation and the phone already draws whatever the
+LAYOUT announces. The common 20/40/60 menu KEEPS phone rendering
+predictable across servers. The REAL open design question: stitching
+many servers' boxes into one continuous/zoomable view when traveling
+(overlaps, node dedupe, which box wins). Belongs in the
+PHONE-APP-DESIGN.md next revision + zoom-out-view design, NOT built
+now. Brett's verdict on the framing: PENDING.
+
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
 Brett has logo images in C:\projects\visuals (logo-draft-1.svg,
 logo-draft-2.svg + HTML previews, plus diagram SVGs). TODO (needs
