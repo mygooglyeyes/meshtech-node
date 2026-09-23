@@ -1,5 +1,17 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word): twin merge + startup saved view +
+## auto sized refresh = node v00.000.039 / phone v00.000.007
+Committed (node 8d24f2c + f7126ee; phone 0fbbcdd + 1d1408d), tagged,
+pushed: node main + tag on GitHub (remote is main+tags only - three
+stray branch names I created by pushing the phone scheme there were
+deleted seconds later, nothing else touched); phone main + tag +
+web/android-twa/apple-web fast-forwarded + tools merged in the
+established pattern; node's four local mirror branches fast-forwarded.
+NEXT: hilltop install (git pull && sudo ./manage.sh install), then
+Ctrl+F5 + connect - expect: saved view card on load, auto "asking for
+a 60 km map refresh" in the event log on connect, ONE dot per node.
+
 ## BUILT, UNCOMMITTED (2026-09-23): startup saved view + auto sized
 refresh + the twin-dots fix (awaiting Brett's commit word)
 Brett's live test found the second-dot artifact and the 60 km startup
