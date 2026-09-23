@@ -1,5 +1,39 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT, UNCOMMITTED (2026-09-23): startup saved view + auto sized
+refresh + the twin-dots fix (awaiting Brett's commit word)
+Brett's live test found the second-dot artifact and the 60 km startup
+gap; his approved plan ("correct"): 1) startup shows what was saved,
+2) connection asks for the saved size. Built on top:
+- TWIN MERGE (the double-dots bug): one physical node under two radio
+  identities (hilltop's own table: KN6OBW DT = prefix 3b AND a8, ~40 m
+  apart) drew two dots. Same name + same place (<=100 m) merges on the
+  server (observations.py same_place/add_position; NEWEST identity
+  wins, older retired in RAM + disk via node_store.forget_node - new
+  method); boot refill collapses disk twins too (fresher identity
+  kept, older row deleted). tests/test_twin_merge.py (5 tests).
+- INTRO PROJECTION FIX (phone, state.ts): the wire carries NO span,
+  the live decode assumed the old 40 km map - on the 60 km box dots
+  landed at 2/3 offset and a 20 km window's INTRO decoded at 2x; the
+  same node across two decode eras landed tens of meters apart, which
+  FED the twins. Now the client rescales by the held LAYOUT's real
+  span before adding the center (40 km = factor 1 = old behavior).
+  app/src/lib/state.test.ts (4 tests) registered in build.py --test.
+- STARTUP SAVED VIEW (phone): the last LAYOUT frame is stored
+  (scope.mapFrame) and drawn on load - "saved view: 3x3, ~60 km" -
+  with the saved pulse counts; the waiting card only shows with
+  nothing saved.
+- AUTO SIZED REFRESH (phone): a FRESH view (no geometry, no pulse)
+  asks for a map at the stored size the moment the link is up - the
+  same ask the button makes, spends one slot from the size's pool; a
+  link bounce never re-asks (map already drawn, pool is small).
+TESTS: node suite 253 passed (6 skipped); phone all suites green;
+served copy synced into node repo app/ (8 files). NOTE: test_service
+fixture rows renamed (Chat Node/Mystery Node) - the twin-merge
+correctly collapses the old same-name-same-place synthetic rows.
+NEXT: Brett reviews -> commit -> push (node v00.000.039, phone
+v00.000.007) -> hilltop install -> live test.
+
 ## PUSHED (2026-09-23): configurable map box 20/40/60 km = v00.000.034
 The map box size is now an install-menu question (after the web port
 question): 1) 20 km sharpest detail, 2) 40 km standard (recommended,

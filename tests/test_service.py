@@ -151,10 +151,14 @@ def test_ingest_node_rows_maps_class_and_position():
     svc = make_service()
     svc._ingest_node_rows([
         _node_row(extra={"contact_type": "Repeater", "is_repeater": True}),
-        _node_row(pubkey="cd00",
+        # distinct names: the 2026-09-23 twin-merge collapses identities
+        # sharing a name AND a position (one node, two prefixes), and
+        # these rows are three DIFFERENT test nodes.
+        _node_row(pubkey="cd00", name="Chat Node",
                   extra={"contact_type": "Chat Node", "is_repeater": False}),
         # unknown spelling: class stays absent, node still enriched
-        _node_row(pubkey="ee01", extra={"contact_type": "Mystery Type"}),
+        _node_row(pubkey="ee01", name="Mystery Node",
+                  extra={"contact_type": "Mystery Type"}),
     ])
     info = svc.store.node_info(0xAB)
     assert info is not None and info["lat"] == 37.1

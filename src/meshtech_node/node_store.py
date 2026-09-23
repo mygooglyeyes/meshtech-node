@@ -170,6 +170,15 @@ class NodeStore:
         return int(self._conn.execute(
             "SELECT COUNT(*) FROM nodes").fetchone()[0])
 
+    def forget_node(self, prefix: int) -> int:
+        """Delete ONE node row (the RAM twin-merge's disk mirror: the
+        retired identity must not resurrect at the next boot refill).
+        Returns rows deleted (0 = nothing to forget)."""
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM nodes WHERE prefix = ?", (int(prefix),))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
     def forget_older_than(self, cutoff_ts: float) -> int:
         """Delete nodes silent past the cutoff (the RAM table's
         FORGET_AFTER_S rule, mirrored so disk cannot outgrow RAM's
