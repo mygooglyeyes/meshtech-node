@@ -85,18 +85,34 @@ revised:  { type:"refresh", req_id:"r7", kind:"map",
   over the air the field costs 1 byte inside the existing
   REFRESH_REQ payload - measured, not guessed, before ship.
 
-## 5. Limits (the "with limits" Brett asked for)
+## 5. Limits (revised by Brett 2026-09-23, load-balanced by size)
 
-The existing S2 refresh budget is unchanged and now also gates
-size-trimmed requests:
+The three window sizes cost different packet loads, so each gets its
+own hourly cap - sized so every level costs the mesh about the same:
 
-- A whole-window refresh (any size) = the same 2-per-30-minutes
-  GLOBAL budget that whole-area refreshes use today. Trimming the
-  window does NOT make refreshes cheaper in budget - the packets
-  sent are fewer, but the request is still "the map".
-- The phone's own 5/hour ledger counts it identically.
-- A smaller window DOES cost less airtime per answer (fewer section
-  packets), which is the honest reward for asking small.
+```
+window    packets per refresh        cap/hour    hourly load
+60 km     12 (layout+9 sections+pulse+names)   1   12 packets (~1.3 s)
+40 km      7 (layout+4 sections+pulse+names)   2   14 packets (~1.5 s)
+20 km      4 (layout+1 section +pulse+names)   3   12 packets (~1.3 s)
+```
+
+All three land at ~12-14 packets per hour - deliberately level with
+each other and comfortably inside the feed's ~34 packets/hour of
+headroom over the background rotation. The bigger the ask, the fewer
+asks you get.
+
+Implementation facts (unchanged from the first draft):
+- The per-client limiter counts the ask BEFORE building the answer
+  (rate.record) - a small window is cheaper in airtime but still one
+  "refresh" in the ledger.
+- The 2-per-30-minutes GLOBAL whole-map budget (all clients pooled)
+  now applies per size: a 60 km ask draws from the 60 km global pool,
+  a 40 km ask from the 40 km pool, a 20 km ask from the 20 km pool.
+  Each pool = the per-hour cap above (1/2/3), enforced across ALL
+  connections together so pooled browsers cannot mint around it.
+- The phone's own ledger shows the same numbers: "1 of 1 left this
+  hour (60 km)" / "2 of 2 (40 km)" / "3 of 3 (20 km)".
 
 ## 6. The automatic feed keeps its shape
 

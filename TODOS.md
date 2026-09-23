@@ -35,10 +35,17 @@ VERIFIED: MAP-SIZE-DESIGN.md (pushed). BUILD PROGRESS:
   NOT pushed: REFRESH_REQ carries span_km, proto v1.3 (0x04), 0 =
   host decides; golden vectors regenerated + matched across codecs;
   node suite 240 green, phone codec 22 green.
-- NEXT: step 4 = the server answers a sized refresh with a
-  size-trimmed LAYOUT/sections/INTRO (budget gate unchanged) + step 5
-  (phone setting + button sends spanKm). Then push, hilltop install,
-  Brett's live test.
+- step 4 DONE, uncommitted: the server answers a sized refresh with
+  a size-trimmed LAYOUT/sections/INTRO (same center, window span in
+  the LAYOUT, strict-overlap section filter, intro offsets relative
+  to the window - zero-dots lesson held). Suite 243 passed.
+- LIMITS REVISED (Brett 2026-09-23, load-balanced): 60 km = 1/hour,
+  40 km = 2/hour, 20 km = 3/hour. Packet math: each level lands at
+  ~12-14 packets/hour (~1.3-1.5 s airtime), level with each other and
+  inside the ~34/h headroom. MAP-SIZE-DESIGN.md section 5 updated.
+- NEXT: step 5 = phone setting + button sends spanKm + per-size caps
+  wired (service limiter picks cap by snapped size; global budget
+  pools per size). Then push, hilltop install, Brett's live test.
 NOT pushed yet - push rides the next version bump with Brett's OK.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
