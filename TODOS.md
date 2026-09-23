@@ -27,9 +27,10 @@ requests). Automatic pulses keep reporting the full 60x60 sections;
 the manual refresh is what trims the picture to the user's window.
 BRETT CONFIRMED 2026-09-23 ("correct"). Design revision WRITTEN +
 VERIFIED: MAP-SIZE-DESIGN.md (pushed). BUILD PROGRESS:
-- step 2 DONE, committed 7285b98 (NOT pushed): server span 60,
+- step 2 DONE, PUSHED as v00.000.035 (7285b98): server span 60,
   install asks center lat/lon instead of size, old configs boot
-  with a snap warning. Suite 240 passed.
+  with a snap warning. Suite 240 passed. NOT yet installed on
+  hilltop - hilltop still runs v34 until Brett pulls + installs.
 - NEXT: step 3 = span_km field on the refresh request (wire change,
   codec version bump, golden vectors, both codecs) + step 4
   (server size-trimmed reply + budget gate) + step 5 (phone setting
