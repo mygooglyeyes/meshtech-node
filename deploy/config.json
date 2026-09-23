@@ -4,7 +4,7 @@
     "name": "Hilltop area",
     "center_lat": 38.1074,
     "center_lon": -122.5697,
-    "span_km": 40,
+    "span_km": 60,
     "grid": 3
   },
   "feed": {

@@ -219,35 +219,40 @@ guided_web_question() {
   echo "Web app will be served on port $port."
 }
 
-# guided_map_question - the map box size (Brett, 2026-09-22: 20/40/60
-# km user-configurable). Enter keeps what the config already has (40
-# on a first install). Cost lines shown in the question, plain words.
-# The value is written into config.json; the server snaps any other
-# number to the nearest choice (config.py warning), so the file stays
-# bootable no matter what.
-guided_map_question() {
+# guided_center_question - the home-area CENTER (Brett's design,
+# 2026-09-23, MAP-SIZE-DESIGN.md verified): the server always watches
+# the full 60x60 km box, so the ONE thing an owner must place is
+# WHERE the box sits. (The old 20/40/60 server size question moved to
+# the phone's refresh setting - not asked here anymore.) Lat/lon in
+# plain degrees; Enter keeps the current values. Defaults are Novato
+# (the deploy config), overridden by whatever the config holds.
+guided_center_question() {
   local cj="$APPDIR/config.json"
-  local cur km
-  cur="$(grep -oE '"span_km": *[0-9.]+' "$cj" | grep -oE '[0-9.]+' | head -1)"
-  cur="${cur:-40}"
+  local cur_lat cur_lon lat lon
+  cur_lat="$(grep -oE '"center_lat": *-?[0-9.]+' "$cj" | grep -oE -- '-?[0-9.]+' | head -1)"
+  cur_lon="$(grep -oE '"center_lon": *-?[0-9.]+' "$cj" | grep -oE -- '-?[0-9.]+' | head -1)"
+  cur_lat="${cur_lat:-38.1074}"
+  cur_lon="${cur_lon:--122.5697}"
   while true; do
     echo
-    echo "Map box size - how wide an area the map watches (Enter = $cur):"
-    echo "  1) 20 km - sharpest detail, smallest area"
-    echo "  2) 40 km - standard (recommended)"
-    echo "  3) 60 km - biggest view, but about 2x the map packets over the"
-    echo "     air and each app update downloads more data"
-    read -rp "Map size [2]: " km
-    case "${km:-2}" in
-      1) km=20 ;;
-      2) km=40 ;;
-      3) km=60 ;;
-      *) echo "please type 1, 2 or 3"; continue ;;
-    esac
+    echo "Home area - the map watches 60 km around your center point."
+    read -rp "Center latitude in degrees (Enter = $cur_lat): " lat
+    lat="${lat:-$cur_lat}"
+    read -rp "Center longitude in degrees (Enter = $cur_lon): " lon
+    lon="${lon:-$cur_lon}"
+    case "$lat" in ''|*[!0-9.-]*|*.*.*) echo "latitude must be a number like 38.1074"; continue ;; esac
+    case "$lon" in ''|*[!0-9.-]*|*.*.*) echo "longitude must be a number like -122.5697"; continue ;; esac
+    if ! awk -v v="$lat" 'BEGIN{exit !(v>=-90 && v<=90)}' ; then
+      echo "latitude must be between -90 and 90"; continue
+    fi
+    if ! awk -v v="$lon" 'BEGIN{exit !(v>=-180 && v<=180)}' ; then
+      echo "longitude must be between -180 and 180"; continue
+    fi
     break
   done
-  sed -i "s|\"span_km\": *[0-9.]*|\"span_km\": $km|" "$cj"
-  echo "Map box will be $km km across."
+  sed -i "s|\"center_lat\": *-\?[0-9.]*|\"center_lat\": $lat|; s|\"center_lon\": *-\?[0-9.]*|\"center_lon\": $lon|" "$cj"
+  sed -i "s|\"span_km\": *[0-9.]*|\"span_km\": 60|" "$cj"
+  echo "Home area: 60 km around $lat, $lon."
 }
 
 # sync_to_appdir - copy the program source into $APPDIR (the run home).
@@ -299,7 +304,7 @@ do_install() {
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
   guided_web_question
-  guided_map_question
+  guided_center_question
   sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
   sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
   echo "- writing the service file (runs from $APPDIR)"

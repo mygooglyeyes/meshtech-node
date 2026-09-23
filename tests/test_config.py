@@ -36,11 +36,20 @@ def test_span_snap_covers_any_value(tmp_path):
 
 
 def test_span_choices_accepted(tmp_path):
-    """All three install-menu sizes load clean, no warnings."""
+    """20/40/60 all still load clean (old configs must boot) - but the
+    SHIPPED default is 60: the server always watches the full home box
+    (MAP-SIZE-DESIGN.md, Brett verified 2026-09-23)."""
     for km in (20.0, 40.0, 60.0):
         s = load(_write(tmp_path, {"area": {"span_km": km}}))
         assert s.area.span_km == km
         assert s.warnings == []
+
+
+def test_span_default_is_sixty(tmp_path):
+    """No area block at all -> 60 km home box (server watches it all;
+    20/40/60 is now a PHONE refresh choice, not a server size)."""
+    s = load(_write(tmp_path, {}))
+    assert s.area.span_km == 60.0
 
 
 def test_span_snaps_to_nearest_with_warning(tmp_path):

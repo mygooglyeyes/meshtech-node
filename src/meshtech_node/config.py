@@ -54,7 +54,7 @@ class AreaCfg:
     # config.json area block overrides these.
     center_lat: float = 38.1074
     center_lon: float = -122.5697
-    span_km: float = 40.0
+    span_km: float = 60.0
     grid: int = 3
 
 
@@ -237,22 +237,21 @@ def load(config_path: str) -> Settings:
         errors.append("area.grid must be between 2 and 5 (a grid x grid "
                       "tiling of the area).")
         grid = 3
-    span_km = _float(area_raw, "span_km", 40.0, errors, "area.span_km")
-    # MAP SIZE CHOICES (Brett, 2026-09-22): the box snaps to one of
-    # three install-menu sizes. The wire doesn't care (any span
-    # travels in the LAYOUT), but fixed choices keep the install
-    # question simple, keep delta/refresh math predictable, and make
-    # every install's cost explicit. Off-menu values snap to the
-    # nearest size (never a config error for a working file).
+    # MAP SIZE - HOME AREA IS 60 (Brett's design, 2026-09-23,
+    # MAP-SIZE-DESIGN.md, verified): the SERVER always watches the
+    # full 60x60 km home box; the 20/40/60 choice belongs to the
+    # PHONE's manual refresh (span_km on the refresh request).
+    # Config keeps accepting 20/40 for old files (snap + warning, an
+    # existing install must never refuse to boot), but the shipped
+    # default and the install menu now write 60.
+    span_km = _float(area_raw, "span_km", 60.0, errors, "area.span_km")
     _SPAN_CHOICES = (20.0, 40.0, 60.0)
     if span_km not in _SPAN_CHOICES:
         snapped = min(_SPAN_CHOICES, key=lambda c: abs(c - span_km))
-        # A warning, NOT an error: an existing working install must
-        # never be refused boot because its box size is off-menu -
-        # it just snaps and says so (honesty rule: the log tells you).
         warnings.append(
             f"area.span_km {span_km:g} snapped to {snapped:g} (allowed: "
-            "20, 40, 60 km - the install-menu choices).")
+            "20, 40, 60 km - the home area is meant to be 60; smaller "
+            "windows are a phone refresh choice now.)")
         span_km = snapped
     area = AreaCfg(
         name=_text(area_raw, "name", "Local area", errors, "area.name"),
