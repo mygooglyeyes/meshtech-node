@@ -31,10 +31,14 @@ VERIFIED: MAP-SIZE-DESIGN.md (pushed). BUILD PROGRESS:
   install asks center lat/lon instead of size, old configs boot
   with a snap warning. Suite 240 passed. NOT yet installed on
   hilltop - hilltop still runs v34 until Brett pulls + installs.
-- NEXT: step 3 = span_km field on the refresh request (wire change,
-  codec version bump, golden vectors, both codecs) + step 4
-  (server size-trimmed reply + budget gate) + step 5 (phone setting
-  + button sends it). Then hilltop install + Brett's live test.
+- step 3 DONE, committed BOTH repos (node 967a0b4, phone b063420),
+  NOT pushed: REFRESH_REQ carries span_km, proto v1.3 (0x04), 0 =
+  host decides; golden vectors regenerated + matched across codecs;
+  node suite 240 green, phone codec 22 green.
+- NEXT: step 4 = the server answers a sized refresh with a
+  size-trimmed LAYOUT/sections/INTRO (budget gate unchanged) + step 5
+  (phone setting + button sends spanKm). Then push, hilltop install,
+  Brett's live test.
 NOT pushed yet - push rides the next version bump with Brett's OK.
 
 ## NEW (Brett, 2026-09-22 late): LOGO/BRANDING ASSETS available
