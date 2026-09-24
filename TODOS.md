@@ -1,5 +1,20 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's call): NO AUTO-RECONNECT = phone
+## v00.000.011 (served copy pushed; node program unchanged)
+The 1006-storm diagnosis (box log): the app's background re-dials
+hammered the node with a stale password and tripped the anti-guessing
+lockout (5 refusals/min) - locking out even the right password.
+Brett's verdict: a drop ENDS the session. Now: any link close ->
+state disabled with the close code in the chip, ZERO background
+dials, Connect is a human press (host + password stay saved).
+test rewritten to pin one-dial-only. Chip -> 00.000.011.
+ALSO OPEN (flaw I found in my update gate): update skips the copy
+when the PROGRAM version matches even if only the served app changed
+(Brett's box served the old page after a bundle-only push; the
+commit-stamp fix is proposed, awaiting his go). Bridge that worked:
+one manual `sudo ./manage.sh install` copies everything.
+
 ## PUSHED (2026-09-23, Brett's word "commit & push"): dot legend +
 ## version chip = phone v00.000.010 (served copy in node repo app/)
 Brett's asks, both shipped: a tiny legend line above every map (color
