@@ -1,5 +1,20 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word "commit & push"): INTRO span on
+## the wire (proto v1.5) + reconnect URL fix = node v00.000.041 /
+## phone v00.000.009
+Committed (node 16d2212 + d6af983 + 7ff2c0f served copy; phone
+3bf9139 + f8b0b13), tagged, pushed; phone branches synced
+(web/android-twa/apple-web ff + tools merge 1b40f36; android/apple
+untouched); node's 4 local mirror branches at 7ff2c0f.
+NEXT (Brett's live test - also the FIRST REAL RUN of manage.sh
+update): on hilltop run `sudo ./manage.sh update` - expect: pulls,
+reports 00.000.040 -> 00.000.041, recent-changes list, copies, deps,
+restarts, ZERO questions. Then Ctrl+F5 on the app page + reconnect:
+1) connect repeatedly - ONE dot set, no offset sets; 2) let the phone
+sleep/wake over the next days - the app should heal itself (reconnect
+dials the right URL now) without a page refresh.
+
 ## BUILT, UNCOMMITTED (2026-09-23): INTRO carries its own span (proto
 ## v1.5, 0x05) - the "new set of offset dots on every connect" fix
 Brett's report: every Connect press drew a NEW SET of offset node
