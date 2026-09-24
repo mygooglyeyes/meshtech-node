@@ -1,5 +1,42 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## VERDICT (2026-09-24, forensic): the remaining advert rejects are
+## INVALID-AS-SENT adverts from a MIXED fleet - the gate is right
+First captured advert decoded (110 of 112 bytes, Tracy-area coords,
+flags 0x92): verifies under NO recipe - reference, capped-96,
+header-included, sig-first, sig-at-end, BE-ts, no-ts, relay-edited
+prefix/suffix, 2-byte reconstructions, every single-bit flip + tail
+unknowns (38.8M verifies), and RX framing add/drop families - ALL
+negative. Not noise, not our bug, not a recipe variant we canname: these adverts were never validly signed as transmitted. Reject
+sample: 7 DISTINCT senders in 30 min, 1 advert each (a population,
+not a spammer). Meanwhile 4 clean nodes stored (Janet, Clover Patch,
+9E5F-Band + 1) - standard senders DO pass. Conclusion: mixed fleet;
+some devices broadcast adverts that fail Ed25519 under the MeshCore
+recipe (custom/broken/older firmware - the old mojibake-twin source).
+Pre-gate they became phantom dots; now counted + refused. NODE SIDE
+HAS NOTHING TO FIX (gate stays exactly as-is, capture stays at 1/min
+for evidence). Possible next: pubkey prefixes (abab91c0..., 8deb749b...)
+could be posted to the MeshCore community to identify the broken
+firmware - Brett's call.
+CAPTURE 2 (132 B sender 1903b6c0, +110 capture minutes): same
+verdict - no recipe, no relay-edit, no timestamp-rewrite in a -60d..
++90d window (13M tries) verifies. NEW FINGERPRINTS: BOTH captures
+carry broken-clock timestamps (+12 h, +83.6 h - MeshCore needs sane
+time for dedupe/order) AND flags 0x92 = advertises AS A REPEATER
+(2/2 samples). Leading theory: DIY/alternate repeater firmware that
+signs wrong (possibly with a key other than the transmitted pubkey -
+unverifiable by design from the air) and keeps bad clocks. A clean
+community identification needs the pubkey prefixes + the repeater-
+flag observation, not just one payload.
+DB HEALTH SIFT (2026-09-24, read-only, run on the box): 98 rows -
+ZERO twins (98 distinct names, no name on 2 radio IDs), zero
+mojibake (emoji in operator names is normal), zero far-out/zero-half
+positions, zero stale, 6 honest no-position rows. ONE oddity: prefix
+88 name carries two control bytes (\x03\x00N6UGX-Room2) - sender's
+own firmware put them inside its SIGNED name; stored as sent, shown
+harmlessly. Verdict: wipe + gate have produced the healthiest map
+hilltop has had.
+
 ## DONE (2026-09-23 evening): one-time node-table wipe RUN (Brett's
 ## hands, live output verified)
 245 rows before -> 0 after, service active. Every stored corrupt twin
