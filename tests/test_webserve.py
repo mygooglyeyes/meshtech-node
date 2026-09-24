@@ -34,13 +34,21 @@ class FakeSettings:
     Built on the real config dataclasses so a field rename breaks
     loudly here instead of silently at the bench."""
 
-    def __init__(self):
+    def __init__(self, db_path=None):
         self.channel = config.ChannelCfg()
         self.area = config.AreaCfg()
         self.feed = config.FeedCfg()
         self.radio = config.RadioCfg()
         self.storage = config.StorageCfg()
         self.logging = config.LoggingCfg()
+        # StorageCfg's default db_path is RELATIVE ("data/scope.db"),
+        # so a test run from the repo root opens the checkout's REAL
+        # database: leftover bench/demo rows there refill the node
+        # table, the connect burst streams a full intro roster, and
+        # the fixed drain windows below drown. Every test gets its own
+        # throwaway DB instead (pytest tmp_path).
+        if db_path is not None:
+            self.storage.db_path = db_path
         self.webserve = config.WebServeCfg()
         self.companion_host = "127.0.0.1"
         self.companion_port = 5052
@@ -53,9 +61,9 @@ class FakeSettings:
 
 
 @pytest_asyncio.fixture
-async def bench_pair(aiohttp_server_factory):
+async def bench_pair(tmp_path, aiohttp_server_factory):
     """A _build()-wired node in bench mode + an aiohttp site + client."""
-    settings = FakeSettings()
+    settings = FakeSettings(db_path=str(tmp_path / "scope-bench.db"))
     source, sender, brain, serve = _build(settings, bench_no_radio=True)
     runner = web.AppRunner(serve.app)
     await runner.setup()
@@ -157,13 +165,11 @@ async def test_refresh_in_reply_to_tagged(bench_pair):
         async with WSClient(url) as ws:
             await ws.recv()   # hello
             await ws.recv()   # state
-            # The connect-time PULSE (Brett 2026-09-21) arrives right
-            # after the state message - it answers no request, so it
-            # carries in_reply_to=None. Skip it; it is not part of the
-            # refresh burst this test pins.
-            first = await ws.recv(timeout=10)
-            if first["type"] == "packet" and first.get("kind") == "pulse":
-                pass          # the connect pulse - expected, skipped
+            # The connect-time burst (PULSE + LAYOUT, Brett 2026-09-21)
+            # and any roster intros answer no request: every one of
+            # them carries in_reply_to=None. Only the tap tags answer
+            # packets, so an untagged packet can never be part of the
+            # answer burst - ignore them all, count only tagged ones.
             req_id = "test-req-1"
             await ws.send({"type": "refresh", "req_id": req_id,
                            "kind": "layout"})
@@ -172,16 +178,14 @@ async def test_refresh_in_reply_to_tagged(bench_pair):
             # first) - both must arrive.
             saw_ack = False
             tagged = 0
-            for _ in range(12):
+            for _ in range(40):
                 msg = await ws.recv(timeout=10)
                 if msg["type"] == "ack":
                     assert msg["req_id"] == req_id
                     saw_ack = True
                 elif msg["type"] == "packet":
-                    if msg.get("kind") == "pulse" and \
-                            msg.get("in_reply_to") is None:
-                        continue   # cadence/connect pulse, not the answer
-                    assert msg["in_reply_to"] == req_id
+                    if msg.get("in_reply_to") != req_id:
+                        continue   # spontaneous frame, not the answer
                     tagged += 1
                     if tagged >= 2 and saw_ack:
                         break
@@ -239,11 +243,14 @@ async def test_resume_ring_and_bad_auth(bench_pair):
         hello = await ws.recv()
         assert hello["last_seq"] == 2
         await ws.send({"type": "resume", "after_seq": 1})
-        # the state message (sent at connect) may still be queued ahead
-        # of the replay - drain until the seq-2 packet shows up.
+        # The connect burst (state, LAYOUT, PULSE - and a full intro
+        # roster when the node knows nodes) queues AHEAD of the ring
+        # replay; drain past all of it until the seq-2 packet shows
+        # up. The bounded window + recv timeout fail loudly if the
+        # replay never comes.
         replayed = None
-        for _ in range(5):
-            msg = await ws.recv()
+        for _ in range(40):
+            msg = await ws.recv(timeout=10)
             if msg.get("type") == "packet" and msg.get("seq") == 2:
                 replayed = msg
                 break
@@ -262,10 +269,10 @@ def test_auth_requires_token_when_non_loopback():
     assert not _is_loopback("192.168.1.10")
 
 
-def test_state_snapshot_honest_when_silent():
+def test_state_snapshot_honest_when_silent(tmp_path):
     """A node that has heard NOTHING reports zeros/nulls - never
     invented numbers (the -105.0 rule)."""
-    settings = FakeSettings()
+    settings = FakeSettings(db_path=str(tmp_path / "scope-snap.db"))
     source, sender, brain, serve = _build(settings, bench_no_radio=True)
     snap = _state_snapshot(brain, source)
     assert snap["listener"]["pkts_last_hour"] == 0

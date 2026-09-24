@@ -9,9 +9,21 @@ Phone side stores NOTHING (dots are page memory) - a reload forgets
 all; per Brett's call, NO wipe-per-connect in the phone (overkill
 with a clean table). WATCH: if duplicate/offset dots ever grow again
 -> that is evidence of an unclosed twin path; chase it with
-bench_demo.py + the box table dump. Open threads parked: 2
-pre-existing webserve test flakes (fail without the signature change
-too); logo/branding integration; meshtech-phone PARKED list.
+bench_demo.py + the box table dump. Open threads parked:
+logo/branding integration; meshtech-phone PARKED list.
+
+## FIXED (2026-09-23 evening, built on Brett's order "fix the two
+## pre-existing webserve test flakes"): TEST DB POLLUTION, NOT CODE
+The 2 webserve test failures were never a code bug. FakeSettings
+left storage.db_path at the RELATIVE default (data/scope.db), so a
+run from the repo root opened the checkout's REAL database; leftover
+bench-demo rows there (tools/bench_demo.py, the bench chapter) made
+the connect burst stream a full intro roster that drowned the tests'
+fixed drain windows. Fresh git worktrees had no such file -> passed.
+Fix: every webserve test now gets its own throwaway DB (pytest
+tmp_path); the two drain windows are bounded + count only tagged
+packets. Main checkout: 266 passed, 6 skipped (was 264+2 failing).
+Side effect: test runs no longer touch data/scope.db at all.
 
 ## PUSHED (2026-09-23, Brett's word "commit"): ADVERT SIGNATURE GATE
 ## (01a27c4) - the duplicate-dots root cause closed
