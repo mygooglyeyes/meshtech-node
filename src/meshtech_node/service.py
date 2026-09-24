@@ -199,6 +199,17 @@ class ScopeService:
 
     async def _handle_refresh(self, req: codec.RefreshReq,
                               sender_prefix: str) -> None:
+        """VECTORED SYNC (2026-09-24): the ask may carry the client's
+        change-counter marker (v1.6 REFRESH_REQ). marker 0 = "not
+        vectored" = the full roster (today's behavior, byte-identical
+        for old clients). marker N = the answer's INTRO batches ship
+        full records ONLY for nodes changed after N, followed by a
+        GONE packet listing retired prefixes (the phone REMOVES those
+        dots)."""
+        await self._handle_refresh_inner(req, sender_prefix)
+
+    async def _handle_refresh_inner(self, req: codec.RefreshReq,
+                                    sender_prefix: str) -> None:
         # COMPANION MODE: a companion never answers refreshes - not on
         # the air (it has no TX mandate) and not for its own web app
         # (there is no host data to build). Heard packets fill the map;
@@ -246,18 +257,38 @@ class ScopeService:
         # counted. A smaller window costs less airtime; the ask itself
         # is still "one map refresh" to the limiter.
         packets = self.builder.build_refresh_response(
-            req.kind, req.target, span_km=req.span_km)
+            req.kind, req.target, span_km=req.span_km,
+            sync_marker=req.sync_marker)
         # WHOLE-AREA refresh also carries a PULSE (last in the burst):
         # the app's Feed-health card reads it, and Brett's rule is a
         # refresh answers with a LIVE map, never "no pulse yet"
         # (2026-09-21). Section-only refreshes stay cheap.
         if target == codec.REFRESH_WHOLE_AREA:
             packets.append(self.build_pulse_now())
-        log.info("Refresh from %s: kind=%d target=%d span=%s -> %d packet(s)",
-                 sender_prefix[:12], req.kind, req.target,
+        # VECTORED SYNC: a vectored ask also learns the RETIREMENTS
+        # (name-supersede, 30-day prune) - one GONE packet per 8
+        # prefixes, after the data. The events are cleared only AFTER
+        # the burst is on the wire (a crash re-sends them; honest).
+        gone = self.builder.store.gone_since(req.sync_marker) \
+            if req.sync_marker else []
+        if gone:
+            for i in range(0, len(gone), codec.MAX_GONE_PER_PACKET):
+                chunk = gone[i:i + codec.MAX_GONE_PER_PACKET]
+                packets.append(OutPacket(
+                    codec.TYPE_GONE,
+                    codec.encode_gone(seq=self.builder._next_seq(),
+                                      origin=self.origin, prefixes=chunk),
+                    "gone"))
+            log.info("Vectored sync: %d node(s) gone -> %d GONE packet(s)",
+                     len(gone), (len(gone) + codec.MAX_GONE_PER_PACKET - 1)
+                     // codec.MAX_GONE_PER_PACKET)
+        log.info("Refresh from %s: kind=%d target=%d span=%s marker=%d "
+                 "-> %d packet(s)", sender_prefix[:12], req.kind, req.target,
                  ("host" if not req.span_km else f"{req.span_km}km"),
-                 len(packets))
+                 req.sync_marker, len(packets))
         await self._send_burst(packets)
+        if gone:
+            self.builder.store.clear_gone(gone)
 
     def build_pulse_now(self) -> OutPacket:  # noqa: F821 (feedbuilder)
         """A PULSE with the service's HONEST uptime (not the builder's

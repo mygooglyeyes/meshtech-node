@@ -1,5 +1,46 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## QUEUED (Brett, 2026-09-24, "one todo later"): STALE NODES PACKET
+(For the meshtech-app phone, tracked here too because the wire
+changes.) A packet naming the nodes the server has not heard from in
+14 days (STALE_AFTER_S - the fact already exists in the store) ->
+the phone renders those dots YELLOW. Design when Brett pulls it.
+
+## FLUTTER CHAPTER (2026-09-24, Brett's go): NEW app at
+## C:\projects\meshtech-app - design doc awaiting Brett's "correct"
+Brett's calls this hour: web app chapter CLOSED (his words: "done
+trying to fix the web app"); new Flutter app lives in its own repo
+C:\projects\meshtech-app (created: skeleton, Android-only, org
+com.meshtech); PC web-app server 8616 already stopped (nothing to
+kill - hilltop's data door untouched). DESIGN RULE: nothing built
+until Brett verifies C:\projects\meshtech-app\DESIGN.md line by
+line; REDESIGNED same day to v2 (Brett's three changes): OTA-FIRST
+(companion radio -> BLE -> phone is the live path), TCP demoted to a
+DOWNLOAD of map + node database for offline use (never a live link),
+map size picked BEFORE connect and size changes redraw ONLY (never
+ask hilltop, never auto-refresh; the app translates data heard at
+any size to the size chosen, packets carry their true span). Phone
+keeps its OWN store and always draws from it. Open: build order
+(OTA-first-tested-by-download vs BLE-first) = Brett's call; hilltop
+TX stays OFF until his explicit go. The app gets its own TODOS.md
+(C:\projects\meshtech-app\TODOS.md) - future work tracked THERE.
+
+## CHAPTER CLOSED (Brett's call, 2026-09-24 ~10:00): "done trying to
+## fix the web app" - NEXT: a real phone app (Flutter), design first
+Brett's words: "it clearly can not handle what I am trying to do".
+Tonight's live facts before the close (honest record, not an argue):
+the v12 page DID deliver honest refusals + a size-correct map on the
+phone; the PC's 60 km view + shared budget (phone took the 40 km slot
+at 09:31:14, PC refused in words) and the restart-wiped counts/routes
+were the friction. UNRESOLVED when closed: doubled dots in section 8
+(no diagnosis yet), per-device budget (offered, never approved).
+Flutter chapter NOT started: prerequisites DONE (flutter doctor
+green 2026-09-24: Flutter 3.47.5 + Dart 3.13.4 at C:\Users\Brett\flutter,
+Android SDK 36 + licenses accepted; VS Code NOT needed - agent edits
+files directly; Visual Studio C++ workload NOT needed - that is
+Windows-desktop only). Design doc BEFORE any code (project rule),
+nothing built without Brett's "correct".
+
 ## PUSHED (2026-09-24, Brett's word "commit & push"): THE CLIENT
 ## CHAPTER - routes on connect, route taps fixed, honest refusals,
 ## silent-drop watchdog = phone v00.000.012 (served copy in node app/)

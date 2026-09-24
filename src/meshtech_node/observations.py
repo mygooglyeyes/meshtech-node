@@ -90,6 +90,13 @@ class RollingStore:
         self._neighbors: Dict[int, BackboneNeighbor] = {}
         # Optional NodeStore (disk write-through + boot refill).
         self.disk = None
+        # VECTORED SYNC (2026-09-24, VECTORED-SYNC-DESIGN.md): the RAM
+        # mirror of the disk counter (the disk copy is the authority;
+        # this keeps RAM-only stores honest too). Private _sig/_seq
+        # keys ride on each node dict: the facts signature detects a
+        # REAL change (name/position/class) and _seq is the node's
+        # change stamp.
+        self._sync_seq = 0
 
     # ------------------------------------------------------------ input
 
@@ -98,12 +105,89 @@ class RollingStore:
         self._obs.append(obs)
         self._prune(now)
 
+    # ------------------------------------------------- vectored sync
+
+    def _fact_sig(self, node: Dict[str, object]) -> tuple:
+        """The stored facts a change-counter cares about. Hearing
+        again with no new facts is NOT a change (the marker must not
+        burn on silence)."""
+        return (node.get("name"), node.get("lat"), node.get("lon"),
+                node.get("node_class"))
+
+    def sync_seq(self) -> int:
+        """The table-wide change counter (disk-backed authority)."""
+        if self.disk is not None:
+            try:
+                return self.disk.sync_seq()
+            except Exception:
+                log.exception("sync counter read failed - RAM mirror")
+        return self._sync_seq
+
+    def node_change_seq(self, prefix: int) -> int:
+        """The change stamp one node row carries (0 = unstamped)."""
+        node = self._nodes.get(prefix)
+        return int(node.get("_seq") or 0) if node else 0
+
+    def nodes_changed_since(self, marker: int) -> List[int]:
+        """Prefixes whose stored facts changed after the marker (the
+        vectored answer ships FULL records for exactly these)."""
+        if self.disk is not None:
+            try:
+                return self.disk.changed_node_rows_since(marker)
+            except Exception:
+                log.exception("changed-since query failed - empty answer")
+                return []
+        return [p for p, n in self._nodes.items()
+                if int(n.get("_seq") or 0) > int(marker)]
+
+    def gone_since(self, marker: int = 0) -> List[int]:
+        """Retired prefixes queued for the phone (name-supersede and
+        the 30-day prune both land here). Consumed by the asker via
+        clear_gone AFTER they are on the wire."""
+        if self.disk is None:
+            return []
+        try:
+            return self.disk.pending_gone()
+        except Exception:
+            log.exception("gone query failed - empty answer")
+            return []
+
+    def clear_gone(self, prefixes: List[int]) -> None:
+        if self.disk is not None and prefixes:
+            try:
+                self.disk.clear_gone(prefixes)
+            except Exception:
+                log.exception("gone clear failed - events stay queued")
+
     def _disk_node(self, prefix: int, node: Dict[str, object], *,
                    now: float) -> None:
         """Write one node's current facts through to disk (best-effort:
         a database hiccup never takes the RX path down; the RAM table
-        stays the working truth, retried on the next fact)."""
+        stays the working truth, retried on the next fact).
+
+        VECTORED SYNC: the SINGLE bump point. A write whose facts
+        actually changed (name/position/class differ from the last
+        write) advances the table-wide counter and stamps the row;
+        a re-heard silence writes last_seen and costs the marker
+        nothing. Order is bump -> upsert-with-stamp so a crash can
+        only ever leave the row looking OLD (resent later), never
+        NEW-and-missed."""
+        sig = self._fact_sig(node)
+        changed = sig != node.get("_sig")
+        if changed:
+            if self.disk is not None:
+                try:
+                    self._sync_seq = self.disk.bump_sync_seq()
+                except Exception:
+                    log.exception("sync counter bump failed (prefix %02x) "
+                                  "- writing facts without a stamp", prefix)
+                    changed = False
+            else:
+                self._sync_seq += 1
         if self.disk is None:
+            if changed:
+                node["_sig"] = sig
+                node["_seq"] = self._sync_seq
             return
         try:
             lat = node.get("lat")
@@ -114,7 +198,11 @@ class RollingStore:
                 node_class=node.get("node_class"),
                 lat=float(lat) if lat is not None else None,
                 lon=float(lon) if lon is not None else None,
-                ts=now)
+                ts=now,
+                change_seq=self._sync_seq if changed else None)
+            if changed:
+                node["_sig"] = sig
+                node["_seq"] = self._sync_seq
         except Exception:
             log.exception("node disk write-through failed (prefix %02x) "
                           "- RAM keeps the truth", prefix)
@@ -184,7 +272,7 @@ class RollingStore:
                 # never overwrites known.
                 for k, v in old.items():
                     if k not in ("name", "lat", "lon", "last_advert_ts",
-                                 "stale"):
+                                 "stale", "_sig", "_seq"):
                         node.setdefault(k, v)
                 node.update({"lat": lat, "lon": lon,
                              "last_advert_ts": now})
@@ -351,6 +439,14 @@ class RollingStore:
             if age > self.FORGET_AFTER_S:
                 del self._nodes[prefix]
                 forgotten += 1
+                # VECTORED SYNC: the phone must learn the deletion
+                # (queued on disk; consumed by the next vectored ask).
+                if self.disk is not None:
+                    try:
+                        self.disk.remember_gone(prefix)
+                    except Exception:
+                        log.exception("gone queue failed for pruned "
+                                      "prefix %02x", prefix)
             elif age > self.STALE_AFTER_S:
                 node["stale"] = True
                 stale += 1

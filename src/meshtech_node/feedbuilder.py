@@ -359,7 +359,8 @@ class FeedBuilder:
 
     def build_refresh_response(self, kind: int, target: int, *,
                                now: Optional[float] = None,
-                               span_km: float = 0.0) -> List[OutPacket]:
+                               span_km: float = 0.0,
+                               sync_marker: int = 0) -> List[OutPacket]:
         """Packets answering one REFRESH_REQ (section or route).
 
         PROTOCOL v1.2: section targets are 1-based (1 = NW .. 9 = SE)
@@ -386,7 +387,8 @@ class FeedBuilder:
                 for sid in self._window_section_ids(sized):
                     out.append(self.build_sect_sum(sid, now=now,
                                                    top_routes=[]))
-                pkt = self._build_intro_for(sized, now=now)
+                pkt = self._build_intro_for(sized, now=now,
+                                            sync_marker=sync_marker)
                 if pkt:
                     out.append(pkt)
                 return out
@@ -398,7 +400,8 @@ class FeedBuilder:
                 pkt = self.build_route(target, path, now=now)
                 if pkt:
                     out.append(pkt)
-            pkt = self._build_intro_for(sized, now=now)
+            pkt = self._build_intro_for(sized, now=now,
+                                        sync_marker=sync_marker)
             if pkt:
                 out.append(pkt)
         elif kind == codec.REFRESH_KIND_ROUTE:
@@ -432,11 +435,17 @@ class FeedBuilder:
                          "layout")
 
     def _build_intro_for(self, sized: GridGeometry, *,
-                         now: float) -> Optional[OutPacket]:
+                         now: float,
+                         sync_marker: int = 0) -> Optional[OutPacket]:
         """An INTRO batch whose offsets are relative to the WINDOW's
         center (the client projects names/positions off the LAYOUT it
         just received - sending home-center offsets with a window
-        layout would place every dot wrong; the zero-dots lesson)."""
+        layout would place every dot wrong; the zero-dots lesson).
+
+        VECTORED SYNC (2026-09-24): sync_marker N > 0 filters the batch
+        to nodes CHANGED after N (full records for exactly those - the
+        phone already holds everything older). marker 0 = every node,
+        today's behavior byte-for-byte."""
         area = self.settings.area
         intro = codec.Intro(seq=self._next_seq(), origin=self.origin,
                             center_lat=sized.center_lat,
@@ -445,6 +454,9 @@ class FeedBuilder:
         entries: List[codec.IntroEntry] = []
         body_len = 1
         known = sorted(self.store.known_nodes())
+        if sync_marker:
+            changed = set(self.store.nodes_changed_since(sync_marker))
+            known = [p for p in known if p in changed]
         positioned, plain = [], []
         for prefix in known:
             info = self.store.node_info(prefix) or {}

@@ -24,7 +24,27 @@ from typing import List, Optional, Tuple
 # 20/40/60 km window of the host's 60x60 home area. 0 = host decides
 # (= the whole home box, today's behavior). Older encoders that omit
 # the field decode as span_km=0. Header layout unchanged.
-PROTO_VERSION = 0x05
+# v1.6 (0x06, 2026-09-24, VECTORED-SYNC-DESIGN.md): PER-PACKET
+# versioning - only the shapes whose wire changed declare 0x06:
+# REFRESH_REQ gains sync_marker (2 LE; the client's vectored-sync
+# marker; the host answers with full records only for nodes CHANGED
+# after that marker; marker 0 = "not vectored" = byte-identical to
+# the v1.5 REFRESH_REQ), and the NEW TYPE_GONE (0x5312) carries the
+# retired prefixes (name-supersede, 30-day prune) so a phone can
+# REMOVE dots - an honest deletion, not a stale fade. All UNCHANGED
+# shapes keep 0x05, so the old web app's strict decoder never sees a
+# version it does not know ("the old web app keeps working
+# unchanged" - the design's own law). A 0x06 REFRESH_REQ is still
+# rejected loudly by every pre-v1.6 decoder - intended: it carries a
+# field they cannot read.
+PROTO_VERSION = 0x05          # default for UNCHANGED shapes
+PROTO_VERSION_REFRESH = 0x06  # REFRESH_REQ (sync_marker added)
+PROTO_VERSION_GONE = 0x06     # GONE (new packet)
+
+# Type GONE (0x5312): vectored-sync deletion notice. Body: seq(2)+
+# origin(2) header then count(1) + count x prefix(1). Up to 8.
+TYPE_GONE = 0x5312
+MAX_GONE_PER_PACKET = 8
 
 # Allowed client window sizes for a refresh (MAP-SIZE-DESIGN section
 # 4): 0 = host decides. The snap-to-nearest choice lives in the
@@ -47,6 +67,7 @@ TYPE_INTRO = 0x5304
 TYPE_LAYOUT = 0x5305
 TYPE_SNAP = 0x5306
 TYPE_REFRESH_REQ = 0x5311
+TYPE_GONE = 0x5312
 
 TYPE_NAMES = {
     TYPE_PULSE: "PULSE",
@@ -56,6 +77,7 @@ TYPE_NAMES = {
     TYPE_LAYOUT: "LAYOUT",
     TYPE_SNAP: "SNAP",
     TYPE_REFRESH_REQ: "REFRESH_REQ",
+    TYPE_GONE: "GONE",
 }
 
 # CMD_SEND_CHANNEL_DATA payload budget (openhop_core constants.py:
@@ -88,18 +110,24 @@ class CodecError(Exception):
 # Header helpers
 # --------------------------------------------------------------------------
 
-def pack_header(seq: int, origin: int = 0) -> bytes:
+def pack_header(seq: int, origin: int = 0, **kwargs) -> bytes:
     """proto_version(1) + seq(2 LE) + origin(2 LE).
 
     origin = first 2 bytes of the host's pubkey - identifies the sender
     when several scope hosts share the channel (v1.1). v1 compat: the
     decoder maps version-0x01 3-byte headers to origin 0x0000.
+    version (kwarg, v1.6): per-packet protocol version - only the
+    shapes whose wire changed declare 0x06 (REFRESH_REQ, GONE); the
+    default PROTO_VERSION (0x05) covers every unchanged shape.
     """
     if not 0 <= int(seq) <= 0xFFFF:
         raise CodecError(f"seq out of range: {seq}")
     if not 0 <= int(origin) <= 0xFFFF:
         raise CodecError(f"origin out of range: {origin}")
-    return struct.pack("<BHH", PROTO_VERSION, int(seq), int(origin))
+    version = kwargs.pop("version", PROTO_VERSION)
+    if kwargs:
+        raise CodecError(f"unknown header kwargs: {sorted(kwargs)}")
+    return struct.pack("<BHH", version, int(seq), int(origin))
 
 
 @dataclass
@@ -117,7 +145,7 @@ def unpack_header(payload: bytes, offset: int = 0) -> Tuple[Header, int]:
         # v1 packet: 3-byte header, no origin field.
         seq = struct.unpack_from("<H", payload, offset + 1)[0]
         return Header(version=version, seq=seq, origin=0), offset + 3
-    if version not in (0x02, 0x03, 0x04, 0x05):
+    if version not in (0x02, 0x03, 0x04, 0x05, 0x06):
         # STRICT: an unknown version must not be silently read with the
         # wrong field widths (0x01 = 3-byte, 0x02+ = 5-byte). A loud
         # error beats a confident misread.
@@ -552,12 +580,16 @@ class RefreshReq:
     # decides = the whole 60x60 home box (today's behavior, and what
     # every pre-v1.3 encoder means when it omits the field).
     span_km: int = REFRESH_SPAN_HOST_DECIDES
+    # v1.6 (vectored sync): the client's change-counter marker; the
+    # answer ships full records only for nodes changed after it.
+    # 0 = "not vectored" = the full roster (today's behavior).
+    sync_marker: int = 0
 
 
 def encode_refresh_req(r: RefreshReq) -> bytes:
     if r.kind not in (REFRESH_KIND_SECTION, REFRESH_KIND_ROUTE):
         raise CodecError(f"refresh kind invalid: {r.kind}")
-    body = pack_header(r.seq, r.origin)
+    body = pack_header(r.seq, r.origin, version=PROTO_VERSION_REFRESH)
     body += struct.pack("<BHHH", r.kind, _u16(r.target, "target"),
                         _u16(r.host, "host"), _u16(r.nonce, "nonce"))
     # v1.3 (0x04): + span_km(2 LE). The version byte in the header is
@@ -565,17 +597,28 @@ def encode_refresh_req(r: RefreshReq) -> bytes:
     # and a strict old decoder REJECTS it loudly rather than misreads
     # (the same rule that guards unknown versions against us).
     body += struct.pack("<H", _u16(r.span_km, "span_km"))
+    # v1.6 (0x06): + sync_marker(2 LE) - 0 = not vectored.
+    body += struct.pack("<H", _u16(r.sync_marker, "sync_marker"))
     return data_type_bytes(TYPE_REFRESH_REQ, body)
 
 
 def decode_refresh_req(payload: bytes) -> RefreshReq:
     header, off = unpack_header(payload)
-    if header.version >= 0x04:
+    if header.version >= 0x06:
+        # v1.6 body: kind(1) target(2) host(2) nonce(2) span_km(2)
+        #             sync_marker(2)
+        if len(payload) < off + 11:
+            raise CodecError("REFRESH_REQ too short")
+        kind, target, host = struct.unpack_from("<BHH", payload, off)
+        nonce, span_km = struct.unpack_from("<HH", payload, off + 5)
+        sync_marker = struct.unpack_from("<H", payload, off + 9)[0]
+    elif header.version >= 0x04:
         # v1.3 body: kind(1) target(2) host(2) nonce(2) span_km(2)
         if len(payload) < off + 9:
             raise CodecError("REFRESH_REQ too short")
         kind, target, host = struct.unpack_from("<BHH", payload, off)
         nonce, span_km = struct.unpack_from("<HH", payload, off + 5)
+        sync_marker = 0
     elif header.version >= 0x02:
         # v1.1 body: kind(1) target(2) host(2) nonce(2), no span_km
         if len(payload) < off + 7:
@@ -583,6 +626,7 @@ def decode_refresh_req(payload: bytes) -> RefreshReq:
         kind, target, host = struct.unpack_from("<BHH", payload, off)
         nonce = struct.unpack_from("<H", payload, off + 5)[0]
         span_km = REFRESH_SPAN_HOST_DECIDES
+        sync_marker = 0
     else:
         # v1 body: kind(1) target(2) nonce(2), no host field
         if len(payload) < off + 5:
@@ -590,9 +634,45 @@ def decode_refresh_req(payload: bytes) -> RefreshReq:
         kind, target, nonce = struct.unpack_from("<BHH", payload, off)
         host = REFRESH_HOST_ANY
         span_km = REFRESH_SPAN_HOST_DECIDES
+        sync_marker = 0
     return RefreshReq(seq=header.seq, kind=kind, target=target,
                       nonce=nonce, origin=header.origin, host=host,
-                      span_km=span_km)
+                      span_km=span_km, sync_marker=sync_marker)
+
+
+# --------------------------------------------------------------------------
+# GONE (0x5312) - vectored sync deletion notice (v1.6)
+# --------------------------------------------------------------------------
+
+@dataclass
+class Gone:
+    seq: int
+    origin: int = 0
+    prefixes: List[int] = field(default_factory=list)  # 1 byte each
+
+
+def encode_gone(*, seq: int, origin: int = 0,
+                prefixes: List[int]) -> bytes:
+    if len(prefixes) > MAX_GONE_PER_PACKET:
+        raise CodecError(f"too many gone prefixes: {len(prefixes)} "
+                         f"> {MAX_GONE_PER_PACKET}")
+    body = pack_header(seq, origin, version=PROTO_VERSION_GONE)
+    body += struct.pack("<B", len(prefixes))
+    for pfx in prefixes:
+        body += struct.pack("<B", _u8(pfx, "gone prefix"))
+    return data_type_bytes(TYPE_GONE, body)
+
+
+def decode_gone(payload: bytes) -> Gone:
+    header, off = unpack_header(payload)
+    if len(payload) < off + 1:
+        raise CodecError("GONE too short")
+    n = payload[off]
+    off += 1
+    if len(payload) < off + n:
+        raise CodecError("GONE prefixes truncated")
+    prefixes = [payload[off + i] for i in range(n)]
+    return Gone(seq=header.seq, origin=header.origin, prefixes=prefixes)
 
 
 # --------------------------------------------------------------------------
@@ -634,6 +714,8 @@ def decode_body(data_type: int, body: bytes) -> object:
         return decode_snap(body)
     if data_type == TYPE_REFRESH_REQ:
         return decode_refresh_req(body)
+    if data_type == TYPE_GONE:
+        return decode_gone(body)
     raise CodecError(f"unknown data_type {data_type:#06x}")
 
 

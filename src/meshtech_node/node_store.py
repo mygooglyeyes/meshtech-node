@@ -70,6 +70,31 @@ _MIGRATIONS: List[tuple] = [
         """,
         "CREATE INDEX IF NOT EXISTS idx_repeaters_last_heard ON repeaters(last_heard)",
     ]),
+    # VECTORED SYNC (2026-09-24, VECTORED-SYNC-DESIGN.md migration 2):
+    # nodes.change_seq = the node row's change-counter stamp; the
+    # 1-row sync_state table = the table-wide monotonic counter,
+    # CONTINUING across restarts (a reset could reuse numbers a phone
+    # already consumed - silently skipping changes, the exact bug
+    # class this design kills). Backfill: every existing row is
+    # stamped at the counter's start value -> the first vectored ask
+    # after this ships is one full roster, then it pays.
+    (2, [
+        "ALTER TABLE nodes ADD COLUMN change_seq INTEGER NOT NULL DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS sync_state (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            change_seq   INTEGER NOT NULL
+        )
+        """,
+        "INSERT OR IGNORE INTO sync_state (id, change_seq) VALUES (1, 0)",
+        "UPDATE nodes SET change_seq = (SELECT change_seq FROM sync_state WHERE id = 1)",
+        """
+        CREATE TABLE IF NOT EXISTS gone_pending (
+            prefix       INTEGER PRIMARY KEY,
+            gone_at      REAL NOT NULL
+        )
+        """,
+    ]),
 ]
 
 
@@ -123,16 +148,21 @@ class NodeStore:
                     node_class: Optional[int] = None,
                     lat: Optional[float] = None, lon: Optional[float] = None,
                     pubkey: Optional[str] = None,
-                    ts: Optional[float] = None) -> None:
+                    ts: Optional[float] = None,
+                    change_seq: Optional[int] = None) -> None:
         """Add or refresh one node. Existing non-empty values are kept
-        (the plugin's rule): unknown never overwrites known."""
+        (the plugin's rule): unknown never overwrites known.
+
+        change_seq (vectored sync): when not None, the row's change
+        stamp is set to it (the caller bumped the table counter for a
+        REAL fact change); None leaves any existing stamp untouched."""
         ts = ts if ts is not None else _now()
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO nodes (prefix, pubkey, name, node_class, lat, lon,
-                                   first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   first_seen, last_seen, change_seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(prefix) DO UPDATE SET
                     last_seen  = excluded.last_seen,
                     pubkey     = CASE WHEN excluded.pubkey IS NOT NULL
@@ -156,15 +186,50 @@ class NodeStore:
                                       AND (excluded.lon != 0.0
                                            OR excluded.lat IS NULL
                                            OR excluded.lat != 0.0)
-                                      THEN excluded.lon ELSE nodes.lon END
+                                      THEN excluded.lon ELSE nodes.lon END,
+                    change_seq = CASE WHEN excluded.change_seq IS NOT NULL
+                                      THEN excluded.change_seq
+                                      ELSE nodes.change_seq END
                 """,
-                (int(prefix), pubkey, name, node_class, lat, lon, ts, ts),
+                (int(prefix), pubkey, name, node_class, lat, lon, ts, ts,
+                 0 if change_seq is None else int(change_seq)),
             )
 
     def node_rows(self) -> List[Dict[str, object]]:
         rows = self._conn.execute(
             "SELECT * FROM nodes").fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------- vectored sync
+
+    def sync_seq(self) -> int:
+        """The table-wide change counter (monotonic, disk-backed)."""
+        return int(self._conn.execute(
+            "SELECT change_seq FROM sync_state WHERE id = 1").fetchone()[0])
+
+    def bump_sync_seq(self) -> int:
+        """Advance the counter by exactly one and return the new value.
+        Called from ONE choke point (the RAM store's disk write-through
+        for real fact changes) - no other writer may bump."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE sync_state SET change_seq = change_seq + 1 "
+                "WHERE id = 1")
+        return self.sync_seq()
+
+    def stamp_node_change(self, prefix: int, seq: int) -> None:
+        """Record a node row's change stamp (called in the same
+        transaction as the bump)."""
+        self._conn.execute(
+            "UPDATE nodes SET change_seq = ? WHERE prefix = ?",
+            (int(seq), int(prefix)))
+
+    def changed_node_rows_since(self, marker: int) -> List[int]:
+        """Prefixes whose facts changed after the given marker."""
+        rows = self._conn.execute(
+            "SELECT prefix FROM nodes WHERE change_seq > ?",
+            (int(marker),)).fetchall()
+        return [int(r[0]) for r in rows]
 
     def node_count(self) -> int:
         return int(self._conn.execute(
@@ -177,15 +242,52 @@ class NodeStore:
         with self._conn:
             cur = self._conn.execute(
                 "DELETE FROM nodes WHERE prefix = ?", (int(prefix),))
+        self.remember_gone(prefix)
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    def remember_gone(self, prefix: int) -> None:
+        """Queue a 'node is gone' fact for the next vectored ask
+        (the phone must be able to REMOVE its dot - an honest
+        deletion, not a stale fade). Queued events survive until a
+        vectored answer consumes them; capped so a phone-less month
+        cannot grow the table forever (oldest dropped past 64)."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO gone_pending (prefix, gone_at) "
+                "VALUES (?, ?)", (int(prefix), _now()))
+            self._conn.execute(
+                "DELETE FROM gone_pending WHERE prefix IN ("
+                "SELECT prefix FROM gone_pending ORDER BY gone_at "
+                "DESC LIMIT -1 OFFSET 64)")
+
+    def pending_gone(self) -> List[int]:
+        prefixes = self._conn.execute(
+            "SELECT prefix FROM gone_pending ORDER BY gone_at").fetchall()
+        return [int(r[0]) for r in prefixes]
+
+    def clear_gone(self, prefixes: List[int]) -> None:
+        if not prefixes:
+            return
+        with self._conn:
+            self._conn.executemany(
+                "DELETE FROM gone_pending WHERE prefix = ?",
+                [(int(p),) for p in prefixes])
 
     def forget_older_than(self, cutoff_ts: float) -> int:
         """Delete nodes silent past the cutoff (the RAM table's
         FORGET_AFTER_S rule, mirrored so disk cannot outgrow RAM's
-        posture). Returns rows deleted."""
+        posture). Deleted prefixes are queued as GONE (vectored sync:
+        the phone must learn the deletion). Returns rows deleted."""
         with self._conn:
+            rows = self._conn.execute(
+                "SELECT prefix FROM nodes WHERE last_seen < ?",
+                (cutoff_ts,)).fetchall()
             cur = self._conn.execute(
                 "DELETE FROM nodes WHERE last_seen < ?", (cutoff_ts,))
+            for r in rows:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO gone_pending (prefix, gone_at) "
+                    "VALUES (?, ?)", (int(r[0]), _now()))
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     # ------------------------------------------------------------- repeaters
