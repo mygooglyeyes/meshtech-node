@@ -16,9 +16,10 @@ read-only reference `openhop_core/src/pymc_core`:
 Honesty rules honored here:
 - a failed crypto import logs ONCE, LOUDLY, and decode answers None -
   never a plausible constant, never a silent skip.
-- advert signatures are NOT verified in v1 (the bot verified them for
-  contact-book trust; the node learns names/positions only). Flagged
-  for bench review - see rawsource.py.
+- advert signatures ARE verified at the RX gate (2026-09-23,
+  Brett's duplicate-dots fix; recipe proven against the reference
+  openhop_core AdvertHandler): a corrupt advert can no longer create
+  a node row, a phantom name, or a dot. See verify_advert_signature.
 - group packets carry NO sender identity on the wire (openhop_repeater
   engine.py:608 returns src_hash=None for them); the caller gets
   prefix=0 and the scope brain owns body-level attribution.
@@ -27,6 +28,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+
+try:                                   # Ed25519 for advert signatures
+    from nacl.signing import VerifyKey
+except ImportError:                    # honest: the gate degrades, loudly
+    VerifyKey = None
 import logging
 import time
 from dataclasses import dataclass, field
@@ -329,10 +335,44 @@ class AdvertInfo:
         return self.flags & 0x0F
 
 
+def verify_advert_signature(payload: bytes) -> bool:
+    """Verify an ADVERT payload's Ed25519 signature - the gate that
+    keeps bit-corrupted adverts from ever becoming node rows (Brett's
+    duplicate-dots fix, 2026-09-23).
+
+    Recipe verified against the openhop_core REFERENCE
+    (pymc_core/node/handlers/advert.py, read-only): the signed region
+    is pubkey(32) + timestamp(4 LE) + appdata, verified with the
+    Ed25519 public key that IS the advert's pubkey (a self-certifying
+    identity: a flipped bit anywhere in the signed region breaks the
+    check). The signature itself sits between timestamp and appdata
+    (bytes 36..100) and is NOT part of the signed region - exactly as
+    the reference parses it (parse_advert_payload + _verify_advert_
+    signature, signature_bytes from the parsed split).
+
+    Returns True only for a verifiably intact advert; False for any
+    corruption (in pubkey, timestamp, name, position, OR signature
+    bytes), a malformed payload, or a missing pynacl (the gate must
+    never wave data through on a broken import - the caller counts
+    and logs the refusal loudly instead)."""
+    if VerifyKey is None:
+        return False                  # degraded gate: refuse everything
+    if len(payload) < 32 + 4 + 64:
+        return False
+    pubkey = payload[0:32]
+    timestamp = payload[32:36]        # raw 4 LE bytes - no round-trip
+    signature = payload[36:100]
+    appdata = payload[100:]
+    try:
+        VerifyKey(pubkey).verify(pubkey + timestamp + appdata, signature)
+    except Exception:
+        return False
+    return True
+
+
 def parse_advert(payload: bytes) -> Optional[AdvertInfo]:
-    """Parse one ADVERT payload. SIGNATURE NOT VERIFIED in v1 (see
-    module docstring) - flagged loudly here so no later reader assumes
-    trust that does not exist yet."""
+    """Parse one ADVERT payload. Callers MUST gate storage on
+    verify_advert_signature(payload) - parsing alone is not trust."""
     if len(payload) < 32 + 4 + 64:
         return None
     prefix = payload[0]

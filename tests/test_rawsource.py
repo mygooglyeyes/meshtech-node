@@ -38,6 +38,22 @@ ADVERT_BODY = (bytes([0x42]) + b"\x11" * 31
                + (-111800000).to_bytes(4, "little", signed=True)
                + b"LoganPeak")
 
+# A REAL signed advert (generated at import with the reference-signed
+# recipe): the signature gate must let THIS through.
+from nacl.signing import SigningKey  # noqa: E402
+_ADVERT_KEY = SigningKey(b"\x01" * 32)   # deterministic seed
+_SIGNED_PUBKEY = bytes(_ADVERT_KEY.verify_key)
+
+def _signed_advert_body() -> bytes:
+    appdata = bytes([0x90]) + (41700000).to_bytes(4, "little", signed=True) \
+        + (-111800000).to_bytes(4, "little", signed=True) + b"LoganPeak"
+    ts = (1234567890).to_bytes(4, "little")
+    sig = _ADVERT_KEY.sign(_SIGNED_PUBKEY + ts + appdata).signature
+    return _SIGNED_PUBKEY + ts + sig + appdata
+
+
+ADVERT_BODY_SIGNED = _signed_advert_body()
+
 
 def _frame(payload_type: int, route: int, payload: bytes) -> bytes:
     header = (0 << 6) | (payload_type << 2) | route
@@ -60,15 +76,23 @@ def _source(items, **kw):
 
 def test_scripted_set_counters_exact():
     """N=3 distinct adverts, each heard M=3 times -> decoded=3, dup=6."""
-    frames = [_frame(0x04, 0, ADVERT_BODY),
-              _frame(0x04, 0, ADVERT_BODY),
-              _frame(0x04, 0, ADVERT_BODY),
-              _frame(0x04, 1, b"\x77" + b"\x11" * 31
-                     + (999).to_bytes(4, "little") + b"\x22" * 64),
-              _frame(0x04, 1, b"\x77" + b"\x11" * 31
-                     + (999).to_bytes(4, "little") + b"\x22" * 64),
-              _frame(0x04, 1, b"\x88" + b"\x11" * 31
-                     + (999).to_bytes(4, "little") + b"\x22" * 64)]
+    # three DISTINCT signed identities (three real keypairs), each
+    # heard per the script - dedupe math is what's under test.
+    keys = [SigningKey(bytes([i]) * 32) for i in (1, 2, 3)]
+    def _body(k: SigningKey) -> bytes:
+        pk = bytes(k.verify_key)
+        appdata = bytes([0x90]) + (41700000).to_bytes(4, "little",
+                                                      signed=True) \
+            + (-111800000).to_bytes(4, "little", signed=True) + b"LoganPeak"
+        ts = (1234567890).to_bytes(4, "little")
+        return pk + ts + k.sign(pk + ts + appdata).signature + appdata
+    b1, b2, b3 = (_body(k) for k in keys)
+    frames = [_frame(0x04, 0, b1),
+              _frame(0x04, 0, b1),
+              _frame(0x04, 0, b1),
+              _frame(0x04, 1, b2),
+              _frame(0x04, 1, b2),
+              _frame(0x04, 1, b3)]
     src = _source([RxPacket(data=f) for f in frames])
     obs = [src.handle_packet(RxPacket(data=f)) for f in frames]
     assert [o is not None for o in obs] == [True, False, False,
@@ -79,10 +103,10 @@ def test_scripted_set_counters_exact():
 
 def test_advert_observation_fields():
     src = _source([])
-    obs = src.handle_packet(RxPacket(data=_frame(0x04, 0, ADVERT_BODY),
+    obs = src.handle_packet(RxPacket(data=_frame(0x04, 0, ADVERT_BODY_SIGNED),
                                      rssi=-77, snr=9.5))
     assert obs is not None
-    assert obs.prefix == 0x42
+    assert obs.prefix == _SIGNED_PUBKEY[0]
     assert obs.node_name == "LoganPeak"
     assert obs.node_class == 0
     assert abs(obs.lat - 41.7) < 0.001
@@ -110,6 +134,42 @@ def test_malformed_counted_not_crashed():
     assert src.handle_packet(RxPacket(data=b"")) is None
     assert src.stats.malformed == 2
     assert src.stats.received == 2
+
+
+# --------------------------------------------------- signature gate ----
+
+def test_corrupt_advert_rejected_counted_never_stored():
+    """THE duplicate-dots fix (Brett, 2026-09-23): a bit-flipped advert
+    (mojibake name, nonsense position) is rejected at the gate -
+    counted in stats.corrupt, NO observation, NO repeater promotion.
+    The scripted ADVERT_BODY above has a fabricated signature (0x22*64
+    filler), so it doubles as the corrupt specimen here."""
+    src = _source([])
+    assert src.handle_packet(RxPacket(data=_frame(0x04, 0, ADVERT_BODY))) \
+        is None
+    assert src.stats.corrupt == 1
+    assert src.stats.decoded == 0
+    assert "corrupt 1" in src.stats_line()
+
+
+def test_signed_advert_still_flows_through_the_gate():
+    """The gate must never bite honest adverts: a properly signed one
+    (reference-signed, same recipe) decodes into an observation as
+    before."""
+    from nacl.signing import SigningKey
+    key = SigningKey.generate()
+    pubkey = bytes(key.verify_key)
+    appdata = bytes([0x90]) + (41700000).to_bytes(4, "little", signed=True) \
+        + (-111800000).to_bytes(4, "little", signed=True) + b"RealNode"
+    ts = (1234567890).to_bytes(4, "little")
+    sig = key.sign(pubkey + ts + appdata).signature
+    payload = pubkey + ts + sig + appdata
+    src = _source([])
+    obs = src.handle_packet(RxPacket(data=_frame(0x04, 0, payload)))
+    assert obs is not None
+    assert obs.prefix == pubkey[0]
+    assert obs.node_name == "RealNode"
+    assert src.stats.corrupt == 0
 
 
 def test_foreign_channel_undecodable_honest():
@@ -169,8 +229,8 @@ def test_foreign_channel_header_path_recorded():
 
 def test_run_feeds_queue_in_order_and_stops():
     async def scenario():
-        frames = [RxPacket(data=_frame(0x04, 0, ADVERT_BODY)),
-                  RxPacket(data=_frame(0x04, 0, ADVERT_BODY)),   # dup
+        frames = [RxPacket(data=_frame(0x04, 0, ADVERT_BODY_SIGNED)),
+                  RxPacket(data=_frame(0x04, 0, ADVERT_BODY_SIGNED)),   # dup
                   RxPacket(data=_frame(0x06, 0, _scope_group_payload()))]
         src = _source(frames)
         queue: asyncio.Queue = asyncio.Queue()

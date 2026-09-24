@@ -33,7 +33,8 @@ from . import packets
 from .observations import Observation
 from .packets import (ChannelKeys, FloodDedupe, FrameParts,
                       PAYLOAD_TYPE_ADVERT, PAYLOAD_TYPE_GRP_DATA,
-                      PAYLOAD_TYPE_GRP_TXT, parse_advert, split_frame)
+                      PAYLOAD_TYPE_GRP_TXT, parse_advert, split_frame,
+                      verify_advert_signature)
 from .repeaters import RepeaterTable
 
 log = logging.getLogger("meshtech-node.rawsource")
@@ -57,6 +58,7 @@ class SourceStats:
     decoded: int = 0
     duplicates: int = 0
     malformed: int = 0
+    corrupt: int = 0                     # adverts failing Ed25519 verification
     undecodable: int = 0                 # group packets with no valid channel
     ignored_type: int = 0
     non_scope: int = 0                   # valid #scope HMAC, other app's data
@@ -254,6 +256,20 @@ class RawPacketSource:
             log.exception("on_scope callback raised - listener continues")
 
     def _from_advert(self, rx: RxPacket, frame: FrameParts) -> Optional[Observation]:
+        if not verify_advert_signature(frame.payload):
+            # THE SIGNATURE GATE (2026-09-23, Brett's duplicate-dots
+            # fix): a bit-corrupted advert is NOT data - its name is
+            # mojibake, its position nonsense, its ID bits broken - and
+            # pre-gate it created a fresh node row (a "new" node) that
+            # the connect roster then delivered as an extra dot.
+            # Rejected LOUDLY (counted, logged once per burst by the
+            # count line), never stored, never promoted to the
+            # repeater table; the node's next clean advert does all
+            # the work a real one should.
+            self.stats.corrupt += 1
+            log.info("advert REJECTED: Ed25519 signature invalid "
+                     "(corrupt reception) - counted, not stored")
+            return None
         info = parse_advert(frame.payload)
         if info is None:
             self.stats.malformed += 1
@@ -345,8 +361,9 @@ class RawPacketSource:
     def stats_line(self) -> str:
         s = self.stats
         return (f"heard {s.received}: decoded {s.decoded}, dup {s.duplicates}, "
-                f"malformed {s.malformed}, undecodable {s.undecodable}, "
-                f"ignored {s.ignored_type}, non-scope {s.non_scope}")
+                f"malformed {s.malformed}, corrupt {s.corrupt}, "
+                f"undecodable {s.undecodable}, ignored {s.ignored_type}, "
+                f"non-scope {s.non_scope}")
 
 
 def _log_task_death(task: "asyncio.Task") -> None:

@@ -22,21 +22,34 @@ GOLDEN_CT = bytes.fromhex(
 GOLDEN_MAC = bytes.fromhex("ca92")
 
 # A repeater's full pubkey (32B) - its 1/2/3-byte prefixes are the tags.
-PUBKEY = bytes(range(0xA0, 0xC0))          # A0 A1 A2 ... BF
-TAG1 = PUBKEY[:1]                          # A0
-TAG2 = PUBKEY[:2]                          # A0 A1
-TAG3 = PUBKEY[:3]                          # A0 A1 A2
+# GENERATED (not hand-picked) since the advert signature gate must
+# verify against the REAL key: the keypair is seeded so the run is
+# deterministic, and the tags below are the resulting pubkey's bytes.
+import os as _os  # noqa: E402
+from nacl.signing import SigningKey as _SK  # noqa: E402
+_REPEAT_KEY = _SK(b"\x00" * 32)  # all-zero seed = deterministic
+PUBKEY = bytes(_REPEAT_KEY.verify_key)
+TAG1 = PUBKEY[:1]
+TAG2 = PUBKEY[:2]
+TAG3 = PUBKEY[:3]
 
 # A DIFFERENT node whose 1-byte tag collides with TAG1 (alias case).
 OTHER_PUBKEY = bytes([0xA0]) + bytes(range(0x30, 0x4F))
 
-ADVERT_BODY = (PUBKEY
-               + (1234567890).to_bytes(4, "little")
-               + b"\x33" * 64
-               + bytes([0x90])                       # class | has-name
-               + (41700000).to_bytes(4, "little", signed=True)
-               + (-111800000).to_bytes(4, "little", signed=True)
-               + b"EmergencyRptr")
+# A REAL signed advert for this identity (the signature gate must let
+# it through; the old 0x33*64 filler is a fabricated signature and is
+# now correctly rejected at the RX gate).
+def _signed_advert_body() -> bytes:
+    key = _REPEAT_KEY
+    pubkey = bytes(key.verify_key)
+    appdata = bytes([0x90]) + (41700000).to_bytes(4, "little", signed=True) \
+        + (-111800000).to_bytes(4, "little", signed=True) + b"EmergencyRptr"
+    ts = (1234567890).to_bytes(4, "little")
+    sig = key.sign(pubkey + ts + appdata).signature
+    return pubkey + ts + sig + appdata
+
+
+ADVERT_BODY = _signed_advert_body()
 
 
 def _frame(payload_type: int, route: int, payload: bytes,
