@@ -1,5 +1,36 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT, UNCOMMITTED (2026-09-23): ADVERT SIGNATURE GATE - the
+## duplicate-dots root cause closed (awaiting Brett's commit word)
+ROOT CAUSE (Brett's box table dump, read-only): dozens of bit-corrupt
+advert twins stored beside their clean originals - `ARE[(&(CERT`
+twins at identical coords, `ES\\7 Gilroy` beside `ESP6 Gilroy`, a
+mojibake Novato twin ~200 km off. One flipped bit = a "new" node row
+(mojibake name, nonsense position, "new" radio ID); the connect
+roster then delivered them all as extra dots. They only SHOW on
+reconnect because connect fires the whole roster at once.
+FIX (Brett picked the signature check): MeshCore adverts are
+Ed25519-signed. packets.verify_advert_signature() verifies
+pubkey+timestamp(4 LE)+appdata with the advert's own pubkey (recipe
+proven against the openhop_core REFERENCE AdvertHandler - read-only,
+rule honored); pynacl was already in the venv. rawsource._from_advert
+gates on it BEFORE parse/dedupe/promotion: corrupt -> counted
+(stats.corrupt, logged, never stored, never promoted). A failed
+nacl import refuses everything (degrade loud, never wave through).
+TESTS: tests/test_advert_signature.py (7, reference-signed: intact
+passes, flipped name/position/pubkey/timestamp/signature all fail,
+truncated fails); test_rawsource +2 (corrupt counted-not-stored;
+signed advert still flows); scripted fixtures converted to REAL
+signed adverts (deterministic zero-seed keypair); repeaters fixture
+now uses a real signed advert too. Suite: 264 passed + 6 skipped;
+2 webserve failures are PRE-EXISTING (verified via git stash - fail
+identically without this change; timing-sensitive, separate matter).
+NOTE: the ~40 corrupt rows ALREADY in hilltop's table stay until a
+one-time cleanup (proposed: a small prune command or SQL Brett runs
+by hand) - the gate only stops NEW ones. Awaiting his word on that
+too. NEXT: commit -> push (node v42) -> hilltop update -> the roster
+rebuilds clean as nodes re-advertise; phone needs nothing.
+
 ## PUSHED (2026-09-23, Brett's word): update gates on the COPIED
 ## COMMIT, not the version (the app-only-push blind spot closed)
 Flaw Brett's box exposed: update compared only the program version
