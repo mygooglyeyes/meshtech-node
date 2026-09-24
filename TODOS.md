@@ -1,5 +1,22 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word): update gates on the COPIED
+## COMMIT, not the version (the app-only-push blind spot closed)
+Flaw Brett's box exposed: update compared only the program version
+(040==040 -> skip) even when the served web app (app/) had changed,
+so his phone kept the old page after a legend-only push and he had to
+run install (full config Q&A - he correctly called that out: update
+is the flow, install is NOT the bridge). Fix: do_update stamps the
+commit it copied into /opt/meshtech-node/.update-commit after a
+successful copy, and gates on stamp vs source HEAD - ANY difference
+(version bump or not) re-copies; no stamp (first update / pre-stamp
+install) = copy, the safe default. Recent-changes list now scopes to
+run_commit..src_commit when a stamp exists. Gate logic dry-run
+verified in a sandbox: no-stamp copies, same-commit skips,
+different-commit copies. manage.sh only - no runtime code touched.
+NOTE for Brett's box: its next update has NO stamp yet -> it copies
+once (self-seeding), then behaves as designed.
+
 ## PUSHED (2026-09-23, Brett's call): NO AUTO-RECONNECT = phone
 ## v00.000.011 (served copy pushed; node program unchanged)
 The 1006-storm diagnosis (box log): the app's background re-dials

@@ -8,6 +8,8 @@
 #   sudo ./manage.sh update       refresh to the latest git code:
 #                                 pull, copy, deps, service file,
 #                                 restart - NO config questions
+#                                 (gates on the copied COMMIT, so
+#                                 web-app-only pushes always land)
 #   sudo ./manage.sh configure    edit radio + feed settings (menu of
 #                                 the values that matter)
 #   sudo ./manage.sh passwords    rotate / regenerate the secrets
@@ -390,6 +392,19 @@ version_of() {
   grep -m1 -E '^version *=' "$1/pyproject.toml" 2>/dev/null | sed 's/.*= *//; s/"//g'
 }
 
+# commit_of <dir> - the git commit a source tree sits at (empty when
+# not a git checkout - the version comparison is the fallback there).
+commit_of() {
+  git -C "$1" rev-parse HEAD 2>/dev/null
+}
+
+# installed_commit - the commit the running install was last copied
+# from (the stamp do_update writes; empty = never stamped, so the
+# next update always copies - the safe default).
+installed_commit() {
+  [[ -f "$APPDIR/.update-commit" ]] && cat "$APPDIR/.update-commit" || true
+}
+
 do_update() {
   need_root update
   require_installed
@@ -417,29 +432,51 @@ do_update() {
     echo "(or check the network) and run: sudo ./manage.sh update"
     return 1
   fi
-  # Compare the pulled source against what is INSTALLED (/opt), not
-  # against the pre-pull folder: 'git pull by hand, then update' and
-  # 'update does the pull' must both land the new code.
-  local src_ver run_ver
+  # Compare the pulled source against what is INSTALLED (/opt) by
+  # COMMIT, not version: the served web app (app/) can change while
+  # the program version stays put - Brett's box served the old page
+  # after a legend-only push because the 040==040 gate skipped the
+  # copy (2026-09-23). The commit stamp catches every change; the
+  # version stays as the human-readable report. No stamp on disk
+  # (first update, or a pre-stamp install) = copy, the safe default.
+  local src_ver run_ver src_commit run_commit
   src_ver="$(version_of "$SCRIPTDIR")"
   run_ver="$(version_of "$APPDIR")"
-  if [[ "$src_ver" == "$run_ver" ]]; then
-    echo "- already at the newest code (version ${src_ver:-unknown};"
-    echo "  the installed copy matches)."
+  src_commit="$(commit_of "$SCRIPTDIR")"
+  run_commit="$(installed_commit)"
+  if [[ -n "$src_commit" && "$src_commit" == "$run_commit" ]]; then
+    echo "- already at the newest code (version ${src_ver:-unknown},"
+    echo "  commit ${src_commit:0:7} matches the installed copy)."
     echo
     echo "Nothing to do. Restart is NOT needed."
     pause
     return 0
   fi
   echo "- updating: version ${run_ver:-unknown} -> ${src_ver:-unknown}"
-  echo "- recent changes:"
-  sudo -u "$src_user" git -C "$SCRIPTDIR" log --oneline -5
+  if [[ -n "$src_commit" ]]; then
+    echo "- recent changes:"
+    if [[ -n "$run_commit" ]]; then
+      sudo -u "$src_user" git -C "$SCRIPTDIR" log --oneline -5 \
+        "${run_commit}..${src_commit}"
+    else
+      sudo -u "$src_user" git -C "$SCRIPTDIR" log --oneline -5
+    fi
+  else
+    echo "- recent changes:"
+    sudo -u "$src_user" git -C "$SCRIPTDIR" log --oneline -5
+  fi
   echo
   # 2) COPY + DEPS + SERVICE FILE - the install mechanics with ZERO
   #    questions: every config question (radio, port, home area) is
   #    skipped - the live /opt configs stay exactly as they are.
   echo "- copying program to $APPDIR ..."
   sync_to_appdir
+  # Stamp WHICH commit this copy came from - the next update's gate
+  # (an app-only push has the same version but a new commit, and must
+  # always be copied). Written after a successful copy, never before.
+  if [[ -n "$src_commit" ]]; then
+    printf '%s\n' "$src_commit" > "$APPDIR/.update-commit"
+  fi
   echo "- installing python dependencies (this can take a few minutes)..."
   install_python_deps
   # A new release can ship an updated service file - re-write it with
