@@ -1,7 +1,20 @@
 # meshtech-node - TODOS (order matters, top first)
 
-## BUILT, UNCOMMITTED (2026-09-23): ADVERT SIGNATURE GATE - the
-## duplicate-dots root cause closed (awaiting Brett's commit word)
+## DONE (2026-09-23 evening): one-time node-table wipe RUN (Brett's
+## hands, live output verified)
+245 rows before -> 0 after, service active. Every stored corrupt twin
+is gone; the signature gate (live on the box since 21:43) stops new
+ones. The map refills as real nodes advertise (hours, not minutes).
+Phone side stores NOTHING (dots are page memory) - a reload forgets
+all; per Brett's call, NO wipe-per-connect in the phone (overkill
+with a clean table). WATCH: if duplicate/offset dots ever grow again
+-> that is evidence of an unclosed twin path; chase it with
+bench_demo.py + the box table dump. Open threads parked: 2
+pre-existing webserve test flakes (fail without the signature change
+too); logo/branding integration; meshtech-phone PARKED list.
+
+## PUSHED (2026-09-23, Brett's word "commit"): ADVERT SIGNATURE GATE
+## (01a27c4) - the duplicate-dots root cause closed
 ROOT CAUSE (Brett's box table dump, read-only): dozens of bit-corrupt
 advert twins stored beside their clean originals - `ARE[(&(CERT`
 twins at identical coords, `ES\\7 Gilroy` beside `ESP6 Gilroy`, a
