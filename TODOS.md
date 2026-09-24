@@ -1,5 +1,54 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT, UNCOMMITTED (2026-09-23): INTRO carries its own span (proto
+## v1.5, 0x05) - the "new set of offset dots on every connect" fix
+Brett's report: every Connect press drew a NEW SET of offset node
+ROOT CAUSE: INTRO positions are deltas measured against a map span,
+but the wire carried NO span (v1.0-1.4) - the client GUESSED the scale
+from whatever LAYOUT it held; any mismatch (a sized window, a replayed
+LAYOUT on connect) scaled every delta wrong = fresh offset dots per
+connect. (The earlier 60 km factor hack assumed held span == packet
+span - true only at a fixed 60 km.)
+FIX (wire change, both codecs, versions next: node 41 / phone 9):
+- INTRO gains span_m (2 LE meters) after the header, BEFORE count.
+  encode writes round(span_m) (0 < x <= 65535 enforced); decode uses
+  the packet's span as THE TRUTH; a caller-passed span is cross-check
+  only (mismatch raises - loud beats silently wrong). Version-gated:
+  v1.4 packets decode old-style (caller span / 40 km era default).
+  decode_any needs NO caller knowledge for v1.5 packets.
+- PROTO_VERSION 0x04 -> 0x05 (golden vectors regenerated, all six).
+- Phone: decodeIntro mirrors the same rules; applyIntro drops the
+  factor hack - decode is now exact (same scale both sides), so it
+  just adds the held LAYOUT center. (Center itself stays off-wire,
+  v1.0 decision, unchanged.)
+- Wire cost: +2 bytes per INTRO (~30-35 packets/h) = ~70 B/h.
+- tests: node codec/feedbuilder/roster/golden suites green (257 + 6
+  skip; new regression pin "intro carries its own span"); phone codec
+  23 + state 7 green; served copy synced into node repo app/.
+NOTE: cross-version window: an OLD phone (v0x04 client) against a NEW
+host gets a decode error on INTROs until it updates (honest refusal,
+not wrong dots); a NEW phone against an OLD host decodes old-style.
+NEXT: Brett reviews -> commit BOTH -> push (node v41 / phone v9) ->
+hilltop: git pull, sudo ./manage.sh install (or the new update cmd),
+Ctrl+F5 -> live test: connect repeatedly, ONE dot set, no offsets.
+CONNECTION DROPS (second bug) - ROOT CAUSE FOUND + FIXED, same build:
+Brett's log line: "link closed: error=1006 clean=false" (the TCP path
+died - phone sleep / Wi-Fi blip; the node did not end it). The bug was
+NOT the radio or the node: directclient.ts scheduleReconnect dialled
+this.lastUrl - which was NEVER ASSIGNED. Every retry dialled null,
+failed, retried null forever: "retrying and not connecting" until a
+page refresh re-ran connect() with the real URL. Fix (phone only):
+connect() remembers the URL (lastUrl = url); open() refuses to dial a
+blank one (schedules a retry instead - belt and braces).
+NEW TEST: lib/directclient.test.ts (1 test) - stubbed WebSocket,
+simulates a 1006 close, awaits the backoff timer, pins the second dial
+= the original URL. testrunner.ts extended to await async test fns;
+registered in build.py tests tuple. All phone suites green.
+
+## ALSO IN THIS BUILD (phone): testrunner awaits async tests (the
+reconnect test needs the ~1 s backoff timer); build.py runs the new
+test file.
+
 ## PUSHED (2026-09-23, Brett's word "commit & push"): manage.sh update
 ## command (fd0c491 on main; no version bump - runtime code unchanged)
 Brett's flow fix: no more full config Q&A after every git pull.

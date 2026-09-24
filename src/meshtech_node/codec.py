@@ -24,7 +24,7 @@ from typing import List, Optional, Tuple
 # 20/40/60 km window of the host's 60x60 home area. 0 = host decides
 # (= the whole home box, today's behavior). Older encoders that omit
 # the field decode as span_km=0. Header layout unchanged.
-PROTO_VERSION = 0x04
+PROTO_VERSION = 0x05
 
 # Allowed client window sizes for a refresh (MAP-SIZE-DESIGN section
 # 4): 0 = host decides. The snap-to-nearest choice lives in the
@@ -117,7 +117,7 @@ def unpack_header(payload: bytes, offset: int = 0) -> Tuple[Header, int]:
         # v1 packet: 3-byte header, no origin field.
         seq = struct.unpack_from("<H", payload, offset + 1)[0]
         return Header(version=version, seq=seq, origin=0), offset + 3
-    if version not in (0x02, 0x03, 0x04):
+    if version not in (0x02, 0x03, 0x04, 0x05):
         # STRICT: an unknown version must not be silently read with the
         # wrong field widths (0x01 = 3-byte, 0x02+ = 5-byte). A loud
         # error beats a confident misread.
@@ -336,6 +336,15 @@ class Intro:
     center_lat: float = 0.0
     center_lon: float = 0.0
     span_m: float = 40000.0
+    # THE SPAN RIDES ON THE WIRE (2026-09-23, Brett's "new set of offset
+    # dots on every connect"): INTRO positions are deltas measured
+    # against a map span, but v1.0-1.4 carried no span - the client
+    # GUESSED it from whatever LAYOUT it held, and a mismatch (a sized
+    # window, a replayed LAYOUT at connect) scaled every delta wrong.
+    # v1.5: 2 LE meters. encode writes it; decode uses it as the truth
+    # (opts.spanM, when given, is only cross-checked). 2.783 m of
+    # position quantization at 60 km - far below GPS noise.
+    wire_span_m: Optional[int] = None
 
 
 def _position_deltas(intro: Intro, lat: float, lon: float) -> Tuple[int, int]:
@@ -356,7 +365,11 @@ def _position_from_deltas(intro: Intro, dlat: int, dlon: int) -> Tuple[float, fl
 def encode_intro(i: Intro) -> bytes:
     if len(i.entries) > 255:
         raise CodecError("too many intro entries")
+    span_wire = round(i.span_m)
+    if not 0 < span_wire <= 0xFFFF:
+        raise CodecError(f"intro span_m out of wire range: {i.span_m}")
     body = pack_header(i.seq, i.origin)
+    body += struct.pack("<H", span_wire)
     body += struct.pack("<B", len(i.entries))
     for entry in i.entries:
         name_bytes = (entry.name or "").encode("utf-8")[:MAX_NAME]
@@ -372,17 +385,44 @@ def encode_intro(i: Intro) -> bytes:
 
 
 def decode_intro(payload: bytes, *, center_lat: float = 0.0,
-                 center_lon: float = 0.0, span_m: float = 40000.0) -> Intro:
-    """Decode INTRO. Positions are reconstructed from deltas against the
-    LAYOUT the client already has (pass it here)."""
+                 center_lon: float = 0.0,
+                 span_m: Optional[float] = None) -> Intro:
+    """Decode INTRO. Positions are reconstructed from deltas against
+    the span THE PACKET CARRIES (v1.5) and the LAYOUT center the
+    client already has (pass it here).
+
+    span_m: a caller's LAYOUT span, used ONLY as a cross-check - if
+    the packet's span disagrees, raise (the honest loud error beats a
+    silently wrong decode). Leave it None (the default) to TRUST the
+    packet - no longer a guess, because the packet now carries the
+    scale its deltas were measured at."""
     header, off = unpack_header(payload)
-    if len(payload) < off + 1:
-        raise CodecError("INTRO too short")
+    if header.version >= 0x05:
+        # v1.5: the packet carries its OWN span (2 LE meters).
+        if len(payload) < off + 2:
+            raise CodecError("INTRO too short for span field")
+        wire_span = struct.unpack_from("<H", payload, off)[0]
+        off += 2
+        if wire_span <= 0:
+            raise CodecError(f"INTRO span must be positive, got {wire_span}")
+        if span_m is not None and round(span_m) != wire_span:
+            raise CodecError(
+                f"INTRO span mismatch: packet says {wire_span} m, "
+                f"caller assumed {round(span_m)} m")
+    else:
+        # v1.0-1.4 packets carry NO span (the old guess-field): fall
+        # back to the caller's span, or the era's 40 km assumption -
+        # exactly the behavior that produced Brett's offset-dots bug,
+        # kept ONLY for packets still in flight from a pre-v1.5 host.
+        wire_span = round(span_m) if span_m is not None else 40000
+        if wire_span <= 0:
+            raise CodecError(f"INTRO span must be positive, got {wire_span}")
     count = payload[off]
     off += 1
     intro = Intro(seq=header.seq, origin=header.origin,
                   center_lat=center_lat, center_lon=center_lon,
-                  span_m=span_m)
+                  span_m=float(wire_span),
+                  wire_span_m=wire_span if header.version >= 0x05 else None)
     for _ in range(count):
         if len(payload) < off + 3:
             raise CodecError("INTRO entry truncated")
@@ -404,7 +444,7 @@ def decode_intro(payload: bytes, *, center_lat: float = 0.0,
             off += 4
             lat, lon = _position_from_deltas(
                 Intro(center_lat=center_lat, center_lon=center_lon,
-                      span_m=span_m), dlat, dlon)
+                      span_m=float(wire_span)), dlat, dlon)  # noqa: E501
         intro.entries.append(IntroEntry(prefix=prefix, name=name,
                                         lat=lat, lon=lon,
                                         node_class=node_class))
@@ -567,7 +607,8 @@ def peek_data_type(payload: bytes) -> int:
 
 
 def decode_any(payload: bytes) -> object:
-    """Decode any scope packet by its data_type."""
+    """Decode any scope packet by its data_type. A v1.5+ INTRO decodes
+    by its OWN carried span (no caller knowledge needed)."""
     data_type = peek_data_type(payload)
     return decode_body(data_type, payload[3:])
 

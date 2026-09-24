@@ -67,8 +67,8 @@ async def test_connect_burst_carries_full_roster():
     assert kinds[1] == codec.TYPE_PULSE
     assert codec.TYPE_INTRO in kinds, "roster must ride the connect burst"
 
-    intros = [codec.decode_any(p) for dt, p in tap.sent
-              if dt == codec.TYPE_INTRO]
+    intros = [codec.decode_any(p)
+              for dt, p in tap.sent if dt == codec.TYPE_INTRO]
     prefixes = [e.prefix for d in intros for e in d.entries]
     known = set(svc.store.known_nodes())
     missing = known - set(prefixes)
@@ -101,8 +101,8 @@ async def test_plain_nodes_reach_the_air():
     """
     svc, tap = _make_service()
     await svc.pulse_now(reason="test-connect", with_layout=True)
-    intros = [codec.decode_any(p) for dt, p in tap.sent
-              if dt == codec.TYPE_INTRO]
+    intros = [codec.decode_any(p)
+              for dt, p in tap.sent if dt == codec.TYPE_INTRO]
     prefixes = [e.prefix for d in intros for e in d.entries]
     plain_seen = [p for p in prefixes if p >= 0x80]
     assert len(plain_seen) == 8, (
