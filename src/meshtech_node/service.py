@@ -291,6 +291,16 @@ class ScopeService:
         burst = []
         if with_layout:
             burst.append(self.builder.build_layout())
+            # SECTION SUMMARIES on connect (Brett, 2026-09-24: "routes
+            # appear immediately on every fresh connect"): one summary
+            # per home square, each carrying its route stubs (the ID
+            # bookmarks a section screen lists - the trail detail still
+            # downloads only when a route is tapped). Without these a
+            # fresh connect draws dots but shows "No routes yet" until
+            # the next cadence beat or a manual refresh.
+            for sid in range(1, self.geometry.section_count + 1):
+                if self._i_own(sid):
+                    burst.append(self.builder.build_sect_sum(sid))
         burst.append(self.build_pulse_now())
         log.info("PULSE on demand (%s%s) - uptime %d min",
                  reason, " + LAYOUT" if with_layout else "",

@@ -152,6 +152,33 @@ class RefreshRateLimiter:
             for key in [k for k in self._hourly if k[0] == oldest]:
                 del self._hourly[key]
 
+    def verdict(self, client_prefix: str, *, now: Optional[float] = None,
+                span_km: float = 0.0) -> Tuple[bool, str, int]:
+        """(allowed, reason, retry_after_s) - the HONEST refusal.
+
+        The 2026-09-24 hunt (Brett's resize reports): a cooldown hit
+        returned bare False and the wire handler sent NOTHING, so the
+        app sat silent on a tap ("route tap does nothing"). Now every
+        refusal names itself: "cooldown" (the 30 s per-client gap,
+        retry in Ns) or "hourly_cap" (the size's pool, retry in Ns).
+        allowed() stays as the boolean convenience wrapper."""
+        now = time.time() if now is None else now
+        prefix = client_prefix.lower()
+        if self._allowed and not any(prefix.startswith(a) or a.startswith(prefix)
+                                     for a in self._allowed):
+            return False, "not_allowed", 0
+        last = self._last.get(prefix)
+        if last is not None and now - last < self._cooldown:
+            return False, "cooldown", int(self._cooldown - (now - last)) + 1
+        bucket = (prefix, self._snap_bucket(span_km))
+        hits = self._hourly.setdefault(bucket, deque())
+        while hits and now - hits[0] > 3600.0:
+            hits.popleft()
+        if len(hits) >= self.span_cap(span_km):
+            wait = int(3600.0 - (now - hits[0])) + 1
+            return False, "hourly_cap", wait
+        return True, "", 0
+
     def allowed(self, client_prefix: str, *, now: Optional[float] = None,
                 span_km: float = 0.0) -> bool:
         now = time.time() if now is None else now

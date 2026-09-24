@@ -289,6 +289,10 @@ async def test_map_budget_pools_per_size(bench_pair):
     ask. Unsized asks keep the legacy 2-per-30-min pool."""
     serve, brain, source, sender, url = bench_pair
     brain_task = asyncio.create_task(brain.run())
+    # This test pins POOL INDEPENDENCE; the 30 s per-client cooldown is
+    # a different dimension (pinned by the cooldown tests) - neutralize
+    # it here so back-to-back asks exercise the pools cleanly.
+    brain.rate._cooldown = 0.0
     try:
         async with WSClient(url) as ws:
             await ws.recv()

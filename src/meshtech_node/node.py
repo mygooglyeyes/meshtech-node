@@ -123,6 +123,11 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
         state_provider=lambda: _state_snapshot(brain, source),
     )
     serve.on_refresh = brain.on_packet
+    # HONEST REFUSALS (2026-09-24): the WS layer pre-checks the same
+    # limiter the brain dispatches through, so a refused ask is ACKED
+    # with its req_id ("cooldown, retry in Ns") instead of silence.
+    serve.refresh_verdict = lambda conn_id, span_km: \
+        brain.rate.verdict(conn_id, span_km=span_km)
     source.on_scope = brain.on_packet   # RX shim: heard #scope -> brain
     brain.feed_tap = serve         # FeedTap: every built packet -> WS
     brain.bench_no_radio = bench_no_radio

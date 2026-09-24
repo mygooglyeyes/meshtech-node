@@ -72,13 +72,16 @@ class _TappedService(ScopeService):
 
 @pytest.mark.asyncio
 async def test_connect_burst_carries_layout_then_pulse():
-    """The connect burst = LAYOUT first, then PULSE: map draws, health
-    fills, one connect, no refresh press."""
+    """The connect burst = LAYOUT, section summaries, then PULSE: map
+    draws, health fills, routes are listed - one connect, no refresh
+    press. (Summaries added 2026-09-24, Brett: routes on connect.)"""
     svc = _TappedService()
     svc.attach_tap()
     await svc.pulse_now(reason="test-connect", with_layout=True)
     kinds = [dt for dt, _p, _w, _t in svc.tapped]
-    assert kinds == [0x5305, 0x5301]    # LAYOUT, then PULSE
+    assert kinds[0] == 0x5305           # LAYOUT leads
+    assert kinds[-1] == 0x5301          # PULSE closes
+    assert kinds.count(0x5302) == 9     # one summary per home square
 
 
 @pytest.mark.asyncio
@@ -99,6 +102,39 @@ def test_build_pulse_now_has_honest_uptime():
     # payload: type(2) len(1) ver(1) seq(2) origin(2) uptime(2)
     uptime = int.from_bytes(pulse.payload[8:10], "little")
     assert uptime == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_summaries_carry_route_stubs():
+    """Routes on connect (Brett, 2026-09-24): the connect burst's
+    section summaries carry ROUTE STUBS, so a tapped section lists its
+    routes immediately - not "No routes yet" until a cadence beat.
+    Regression pin for the connect-burst summaries."""
+    from meshtech_node.codec import decode_sect_sum, TYPE_SECT_SUM
+    from meshtech_node.observations import Observation
+    svc = _TappedService()
+    svc.attach_tap()
+    now = __import__("time").time()
+    # One packet through a repeater, sent from the home center: the
+    # section summary for that square must carry the path's stub.
+    svc.builder.store.add(Observation(
+        recv_ts=now, origin_ts=now - 2.0, prefix=0x77,
+        lat=svc.settings.area.center_lat + 0.001,
+        lon=svc.settings.area.center_lon + 0.001,
+        path_prefixes=[0x66]), now=now)
+    svc.builder.store.add_position(0x77,
+                                   svc.settings.area.center_lat + 0.001,
+                                   svc.settings.area.center_lon + 0.001,
+                                   name="Sender", now=now)
+    await svc.pulse_now(reason="test-connect", with_layout=True)
+    sums = [decode_sect_sum(p[3:])
+            for dt, p, _w, _t in svc.tapped if dt == TYPE_SECT_SUM]
+    assert len(sums) == 9
+    stubs = [s for s in sums if s.route_stubs]
+    assert len(stubs) == 1, "exactly one section owns the route"
+    assert stubs[0].route_stubs == [4198], (
+        "the stub id must be derived from the heard path bytes "
+        "(prefix<<2 | hops: 0x66+1 hop = 0x199)")
 
 
 @pytest.mark.asyncio

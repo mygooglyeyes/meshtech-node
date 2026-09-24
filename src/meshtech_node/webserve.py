@@ -133,7 +133,8 @@ class WebServe:
                  on_refresh: Optional[Callable[[object, str], None]] = None,
                  on_client_connected: Optional[Callable[[str], None]] = None,
                  feed_info: Optional[dict] = None,
-                 state_provider: Optional[Callable[[], dict]] = None):
+                 state_provider: Optional[Callable[[], dict]] = None,
+                 refresh_verdict: Optional[Callable[[str, float], tuple]] = None):
         self.host = host
         self.port = port
         self.auth = _Auth(token) if token else None
@@ -161,6 +162,12 @@ class WebServe:
         # state_provider = the brain's honest state snapshot (listener
         # + feed truth the BLE path can never see); None -> nulls.
         self.state_provider = state_provider
+        # HONEST REFUSALS (the 2026-09-24 silent-tap hunt): the brain's
+        # rate limiter knows WHY it refuses (30 s per-client cooldown,
+        # per-size hourly pool) - this pre-check lets the WS layer send
+        # the ack frame with the right req_id BEFORE the brain's own
+        # check would silently swallow the ask. Optional (bench None).
+        self.refresh_verdict = refresh_verdict
         self.clients: Set = set()
         self.seq = 0
         self.ring: List[dict] = []          # last RING_CAPACITY packets
@@ -427,6 +434,15 @@ class WebServe:
                 span_raw = obj.get("span_km", 0)
                 span_km = float(span_raw) if \
                     isinstance(span_raw, (int, float)) and span_raw > 0 else 0.0
+            elif kind_s == "route":
+                # v1.2 route detail: target is the route_id the section
+                # summary advertised. (HUNT FIX 2026-09-24: this kind
+                # string previously fell through to the unknown-kind
+                # return - every route tap died silently, no ack ever.)
+                kind = codec.REFRESH_KIND_ROUTE
+                target = obj.get("target")
+                if not isinstance(target, int) or not 0 <= target <= 0xFFFF:
+                    return
             else:
                 return
             # S2, closed 2026-09-20: ANY target-0 refresh means
@@ -444,6 +460,21 @@ class WebServe:
                                       "accepted": False,
                                       "reason": "listen_only"})
                 return
+            # HONEST REFUSAL pre-check: the per-client cooldown / size
+            # pool verdict, acked HERE with the client's req_id (the
+            # brain's own limiter still gates the dispatched ask -
+            # same limiter, same verdict, no double penalty).
+            if self.refresh_verdict is not None:
+                ok, reason, wait = self.refresh_verdict(conn_id, span_km)
+                if not ok:
+                    log.info("refresh refused (%s) - retry in %ds",
+                             reason, wait)
+                    await self._send(ws, {"type": "ack",
+                                          "req_id": req_id,
+                                          "accepted": False,
+                                          "reason": reason,
+                                          "retry_after_s": wait})
+                    return
             if target == codec.REFRESH_WHOLE_AREA:
                 # Per-size global pools (Brett 2026-09-23): each window
                 # size has its own allowance (60 km 1/h, 40 km 2/h,

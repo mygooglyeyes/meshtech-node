@@ -1,5 +1,36 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-24, Brett's word "commit & push"): THE CLIENT
+## CHAPTER - routes on connect, route taps fixed, honest refusals,
+## silent-drop watchdog = phone v00.000.012 (served copy in node app/)
+Brett's four live reports, all fixed:
+(1) ROUTE TAPS DID NOTHING: webserve's _client_msg had NO "route"
+kind - every tap fell into the unknown-kind return and died silently.
+NEW branch parses the target (0..0xFFFF) and runs the same refresh
+path.
+(2) ROUTES MISSING ON CONNECT: the connect burst now carries LAYOUT ->
+9 section summaries (each with its route stubs, e.g. 4198) -> PULSE ->
+intro roster, so a fresh connect + section tap lists routes at once.
+(3) SILENT REFUSALS: a sized refresh the budget refuses now ACKs
+honestly (accepted:false + reason + retry_after_s; reasons cooldown /
+hourly_cap / not_allowed) instead of the server sending NOTHING; the
+phone logs refusals in plain words. Wiring: webserve refresh_verdict
+ctor param <- node.py serve.refresh_verdict <- budget.py verdict()
+(allowed() kept as a wrapper).
+(4) 233-MIN PULSE AGE (phone slept, TCP died silently, app never
+told): directclient watchdog - no packet AND no pong for 11 min (2x
+pulse cadence; any packet/pong refreshes it) -> link closed, chip
+reads "link lost (no feed)". NO auto-reconnect - the v11 rule holds.
+ALSO size-aware auto-ask: after connect the app asks for a map ONLY
+if the held map is not already at the chosen size (3 s grace; a burst
+inside the grace cancels the ask) - so a chosen-size answer applies.
+Suites: node 271 passed + 6 skipped; phone 45 passed. This push also
+carries 779c455 (the advert verdict + DB sift notes).
+NEXT (live test): hilltop sudo ./manage.sh update + Ctrl+F5 -> fresh
+connect lists routes on a section tap; 20/40 km resizes show honest
+plain-words refusals when limited; phone asleep 15+ min comes back to
+a "link lost (no feed)" chip.
+
 ## VERDICT (2026-09-24, forensic): the remaining advert rejects are
 ## INVALID-AS-SENT adverts from a MIXED fleet - the gate is right
 First captured advert decoded (110 of 112 bytes, Tracy-area coords,

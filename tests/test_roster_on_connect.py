@@ -64,7 +64,9 @@ async def test_connect_burst_carries_full_roster():
     await svc.pulse_now(reason="test-connect", with_layout=True)
     kinds = [dt for dt, _p in tap.sent]
     assert kinds[0] == codec.TYPE_LAYOUT
-    assert kinds[1] == codec.TYPE_PULSE
+    assert codec.TYPE_PULSE in kinds, "health must fill on connect"
+    # section summaries ride between LAYOUT and PULSE (2026-09-24)
+    assert kinds.count(codec.TYPE_SECT_SUM) == 9
     assert codec.TYPE_INTRO in kinds, "roster must ride the connect burst"
 
     intros = [codec.decode_any(p)
