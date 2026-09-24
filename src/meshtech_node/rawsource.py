@@ -33,7 +33,8 @@ from . import packets
 from .observations import Observation
 from .packets import (ChannelKeys, FloodDedupe, FrameParts,
                       PAYLOAD_TYPE_ADVERT, PAYLOAD_TYPE_GRP_DATA,
-                      PAYLOAD_TYPE_GRP_TXT, parse_advert, split_frame,
+                      PAYLOAD_TYPE_GRP_TXT, advert_gate_available,
+                      advert_recipe_reports, parse_advert, split_frame,
                       verify_advert_signature)
 from .repeaters import RepeaterTable
 
@@ -92,6 +93,11 @@ class RawPacketSource:
     channels: List[ChannelKeys] = field(default_factory=list)
     dedupe: Optional[FloodDedupe] = None
     on_scope: Optional[ScopeCallback] = None
+    # REJECT CAPTURE (2026-09-23): the every-advert-rejects hunt - at
+    # most one rejected advert per minute gets its leading bytes +
+    # recipe-battery verdicts logged (tools/advert_probe.py decodes
+    # them offline). Rate-limited so the log can never fill the disk.
+    _last_reject_capture: float = 0.0
     # COMPANION MODE bridge (2026-09-20): every heard #scope plaintext
     # (data_type, plaintext, rx) offered AFTER the 0x53 type guard -
     # the tap that carries heard packets to the app. Independent of
@@ -267,8 +273,34 @@ class RawPacketSource:
             # repeater table; the node's next clean advert does all
             # the work a real one should.
             self.stats.corrupt += 1
-            log.info("advert REJECTED: Ed25519 signature invalid "
-                     "(corrupt reception) - counted, not stored")
+            # HONEST LOG (the -105.0 rule, learned 2026-09-23 the hard
+            # way on hilltop): pynacl missing used to refuse EVERY
+            # advert while the next line claimed "signature invalid" -
+            # a dead gate dressed up as corrupt radio for hours. Name
+            # the real cause when the gate cannot verify at all.
+            if not advert_gate_available():
+                log.error("advert REJECTED: pynacl MISSING - the gate "
+                          "cannot verify ANY advert (install pynacl; "
+                          "manage.sh now does). corrupt=%d", self.stats.corrupt)
+                return None
+            # CAPTURE (2026-09-23, the every-advert-rejects hunt): at
+            # most ONE rejected advert per minute is logged with its
+            # leading bytes + recipe-battery verdicts, so a rejected
+            # advert can be verified by hand offline (tools/
+            # advert_probe.py) instead of the cause being guessed.
+            # Rate-limited: the log can never fill the SD card.
+            now = time.time()
+            if now - self._last_reject_capture >= 60.0:
+                self._last_reject_capture = now
+                reports = advert_recipe_reports(frame.payload)
+                verdicts = "; ".join(f"{name} -> {ok}" for name, ok in reports) \
+                    or "no recipes runnable"
+                log.info("advert REJECTED (corrupt=%d): %d B: prefix %s | %s",
+                         self.stats.corrupt, len(frame.payload),
+                         frame.payload[:110].hex(), verdicts)
+            else:
+                log.info("advert REJECTED: Ed25519 signature invalid "
+                         "(corrupt reception) - counted, not stored")
             return None
         info = parse_advert(frame.payload)
         if info is None:

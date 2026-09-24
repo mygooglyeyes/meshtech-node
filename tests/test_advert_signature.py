@@ -22,7 +22,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest  # noqa: E402
 
-from meshtech_node.packets import parse_advert, verify_advert_signature  # noqa: E402
+from meshtech_node.packets import (  # noqa: E402
+    advert_recipe_reports, parse_advert, verify_advert_signature,
+)
 
 pymc = pytest.importorskip("pymc_core", reason="reference library signs "
                                               "the test adverts")
@@ -105,3 +107,38 @@ def test_untouched_signature_bytes_not_in_signed_region():
 def test_truncated_payload_rejected():
     assert verify_advert_signature(b"\\x00" * 50) is False
     assert verify_advert_signature(b"") is False
+
+
+# ------------------------------------------------- recipe battery -------
+
+
+def test_recipe_battery_reference_recipe_verifies_forgery_fails():
+    """The DIAGNOSTIC battery (the reject-capture companion, Brett's
+    "work a tool that tries different decoding techniques too"): on a
+    clean advert the production recipe verifies; on a forged one no
+    recipe does. The battery NEVER feeds the gate - it names recipes
+    offline (tools/advert_probe.py)."""
+    key = SigningKey.generate()
+    payload = _signed_advert(key)
+    reports = advert_recipe_reports(payload)
+    reference_ok = [ok for name, ok in reports if "uncapped" in name]
+    assert reference_ok == [True]
+
+    forged = bytearray(payload)
+    forged[40] ^= 0xFF                   # inside the signature bytes
+    assert not any(ok for _n, ok in advert_recipe_reports(bytes(forged)))
+
+
+def test_recipe_battery_spots_truncated_appdata_variant():
+    """The battery's real job: DISTINGUISH recipes. With appdata longer
+    than the reference's 96-byte cap, the capped variant verifies a
+    DIFFERENT payload than the uncapped one - so a sender that signs
+    the truncated form shows up as 'capped verifies, uncapped not'.
+    (Below the cap the two are byte-identical - no signal there.)"""
+    key = SigningKey.generate()
+    long_name = b"R" * 88                # appdata: 1+8+88 = 97 bytes
+    payload = _signed_advert(key, name=long_name)
+    assert len(payload) - 100 == 97      # one byte over the cap
+    reports = dict(advert_recipe_reports(payload))
+    assert reports["reference: pub+ts+appdata, sig@36..100, appdata uncapped"]
+    assert not reports["appdata capped at 96 (reference handler truncates)"]

@@ -116,6 +116,48 @@ def test_advert_observation_fields():
     assert obs.path_prefixes == []          # 0 hops
 
 
+def test_reject_capture_logs_once_per_minute(monkeypatch, caplog):
+    """The reject CAPTURE (Brett's decode-tool request): the FIRST
+    rejected advert logs its length, leading bytes and recipe verdicts;
+    further rejects inside the same minute log only the plain line.
+    The gate itself never changes - rejects are still rejects."""
+    import logging as _logging
+    forged = bytearray(ADVERT_BODY_SIGNED)
+    forged[40] ^= 0xFF                   # inside the signature bytes
+    frames = [_frame(0x04, 0, bytes(forged))] * 3
+    src = _source([RxPacket(data=f) for f in frames])
+    with caplog.at_level(_logging.INFO, logger="meshtech-node.rawsource"):
+        for f in frames:
+            src.handle_packet(RxPacket(data=f))
+    cap_lines = [r.message for r in caplog.records
+                 if "prefix" in r.message]
+    plain = [r.message for r in caplog.records
+             if "advert REJECTED" in r.message and "prefix" not in r.message]
+    assert len(cap_lines) == 1           # rate-limited: exactly one
+    assert len(plain) == 2
+    assert f"{len(forged)} B" in cap_lines[0]
+
+
+def test_reject_capture_recovers_after_the_minute(monkeypatch):
+    """A later reject outside the rate-limit window captures again
+    (the clock is monkeypatched, not slept - deterministic)."""
+    import time as _time
+    forged = bytearray(ADVERT_BODY_SIGNED)
+    forged[40] ^= 0xFF
+    frames = [_frame(0x04, 0, bytes(forged))] * 2
+    src = _source([RxPacket(data=f) for f in frames])
+    clock = [1000.0]
+    monkeypatch.setattr(_time, "time", lambda: clock[0])
+    src.handle_packet(RxPacket(data=frames[0]))     # captures, clock=1000
+    first = src._last_reject_capture
+    clock[0] = 1030.0                                # 30s later: still held
+    src.handle_packet(RxPacket(data=frames[1]))
+    assert src._last_reject_capture == first
+    clock[0] = 1061.0                                # 61s later: re-armed
+    src.handle_packet(RxPacket(data=frames[1]))
+    assert src._last_reject_capture == 1061.0
+
+
 def test_group_observation_fields_and_dedupe():
     src = _source([])
     data = _frame(0x06, 0, _scope_group_payload())

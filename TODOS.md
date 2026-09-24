@@ -12,6 +12,32 @@ with a clean table). WATCH: if duplicate/offset dots ever grow again
 bench_demo.py + the box table dump. Open threads parked:
 logo/branding integration; meshtech-phone PARKED list.
 
+## PUSHED (2026-09-24): PYNACL WAS MISSING ON HILLTOP + REJECT
+## CAPTURE + RECIPE PROBE (the every-advert-rejects hunt)
+The morning after the signature gate shipped, hilltop's log showed
+EVERY advert rejected. Diagnosis, proven with Brett's hands: the box
+venv had NO pynacl (TODOS' earlier "pynacl was already in the venv"
+was WRONG - manage.sh never installed it, pyproject declares no
+deps), and the gate's degraded mode refuses everything while logging
+"signature invalid" - a dead gate dressed up as corrupt radio.
+FIXED LIVE (Brett's hands, output verified): pip install pynacl into
+the box venv (1.6.2), service restarted active. Map refilling: 4
+nodes stored within the hour (Janet, Clover Patch, 9E5F-Band + one
+nameless advert - clean names, no mojibake).
+BUILT (this push): (1) manage.sh install_python_deps now installs
+pynacl every time; (2) the gate's missing-library case logs "pynacl
+MISSING" (log.error) instead of the lying "signature invalid";
+(3) REJECT CAPTURE: at most ONE rejected advert per minute logs its
+length + first 110 bytes + a 4-recipe Ed25519 verdict battery (rate-
+limited - the log can never fill the disk; the gate itself is
+untouched); (4) tools/advert_probe.py decodes a captured line
+offline and reports which recipe (if any) verifies - name the
+senders' real recipe, never guess it. Suite: 270 passed, 6 skipped.
+OPEN: rejects continue after the pynacl fix (gate accepts SOME
+senders, refuses most - per-sender recipe difference is the lead).
+Next capture line goes through advert_probe.py; recipe battery may
+need more variants once real bytes are in hand.
+
 ## FIXED (2026-09-23 evening, built on Brett's order "fix the two
 ## pre-existing webserve test flakes"): TEST DB POLLUTION, NOT CODE
 The 2 webserve test failures were never a code bug. FakeSettings

@@ -28,6 +28,7 @@ memory.
 | --- | --- | --- |
 | aiohttp | Apache-2.0 AND MIT (dual) | WebSocket feed server + modem link |
 | pycryptodome | BSD, Public Domain | AES channel crypto |
+| pynacl | Apache-2.0 | Ed25519 advert signature gate (bundles libsodium) |
 | pytest / pytest-asyncio | MIT | Tests only - never runs in production |
 
 ## Protocol acknowledgment

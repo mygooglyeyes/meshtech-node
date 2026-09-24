@@ -370,6 +370,62 @@ def verify_advert_signature(payload: bytes) -> bool:
     return True
 
 
+def advert_gate_available() -> bool:
+    """True when the gate can actually verify (pynacl importable).
+
+    The every-advert-rejects hunt (2026-09-23) proved hilltop ran
+    WITHOUT pynacl: the gate refused every advert while the log said
+    "signature invalid" - a dead gate dressed up as corrupt radio.
+    The caller uses this to log the truth instead (the -105.0 rule:
+    never answer a failure with a plausible wrong story)."""
+    return VerifyKey is not None
+
+
+def advert_recipe_reports(payload: bytes) -> list:
+    """DIAGNOSTIC ONLY (2026-09-23, "every advert rejected" hunt): try
+    a battery of plausible Ed25519 signing-recipe variants against one
+    captured advert payload and report which (if any) verifies.
+
+    The production gate is and stays verify_advert_signature() alone;
+    this exists so a captured rejected advert can be decoded offline
+    and the senders' true recipe NAMED instead of guessed (the silent-
+    spot rule: fill the gap with a measurement, never a memory).
+
+    Returns a list of (recipe_name, ok) tuples; empty list when the
+    payload is malformed or pynacl is missing."""
+    if VerifyKey is None or len(payload) < 32 + 4 + 64:
+        return []
+    pubkey = payload[0:32]
+    timestamp = payload[32:36]
+    signature = payload[36:100]
+    appdata = payload[100:]
+    app_trunc = appdata[:96]            # reference MAX_ADVERT_DATA_SIZE
+    try:
+        key = VerifyKey(pubkey)
+    except Exception:
+        return [("pubkey-not-a-valid-ed25519-key", False)]
+
+    recipes = [
+        ("reference: pub+ts+appdata, sig@36..100, appdata uncapped",
+         pubkey + timestamp + appdata, signature),
+        ("appdata capped at 96 (reference handler truncates)",
+         pubkey + timestamp + app_trunc, signature),
+        ("header included: full payload, sig@36..100",
+         payload, signature),
+        ("signature-first layout: pub+sig@32..96+ts+appdata",
+         pubkey + payload[96:100] + appdata, payload[32:96]),
+    ]
+    reports = []
+    for name, message, sig in recipes:
+        try:
+            key.verify(message, sig)     # raises on bad signature
+            ok = True
+        except Exception:
+            ok = False
+        reports.append((name, ok))
+    return reports
+
+
 def parse_advert(payload: bytes) -> Optional[AdvertInfo]:
     """Parse one ADVERT payload. Callers MUST gate storage on
     verify_advert_signature(payload) - parsing alone is not trust."""

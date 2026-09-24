@@ -276,7 +276,11 @@ sync_to_appdir() {
 install_python_deps() {
   [[ -d "$APPDIR/.venv" ]] || python3 -m venv "$APPDIR/.venv"
   "$APPDIR/.venv/bin/pip" install --quiet --upgrade pip
-  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome
+  # pynacl (2026-09-23): the advert signature gate's Ed25519 verify -
+  # hilltop ran WITHOUT it once and the gate refused every advert
+  # while the log said "signature invalid". It installs with the rest,
+  # every time.
+  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome pynacl
   "$APPDIR/.venv/bin/python" -c "import spidev" 2>/dev/null \
     || "$APPDIR/.venv/bin/pip" install --quiet spidev \
     || echo "WARNING: spidev unavailable - radio will not start"
