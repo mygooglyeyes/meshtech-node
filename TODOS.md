@@ -1,5 +1,21 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## PUSHED (2026-09-23, Brett's word "commit & push"): dot legend +
+## version chip = phone v00.000.010 (served copy in node repo app/)
+Brett's asks, both shipped: a tiny legend line above every map (color
+dot + word: repeater / companion / class unknown - same CSS vars the
+dots use) and the app VERSION always visible in the header (version.ts;
+"is my page current?" is now a glance, not a guess).
+BENCH REPRODUCTION of the reconnect-dots report (tools/bench_demo.py,
+new): a demo-fed node + WebServe, drove the REAL app in the preview -
+40 demo dots, three full disconnect/reconnect cycles, 40 dots every
+time on the v9 app code. No growth reproduced. Brett's live result is
+consistent with the page he tested still running the pre-update app
+code (the cache question) - NOT proven, and the version chip makes
+this checkable from now on (chip must read 00.000.010). If duplicates
+EVER return: note the chip version + whether the mapped-nodes count
+grows, and bench_demo.py re-runs the scene in minutes.
+
 ## PUSHED (2026-09-23, Brett's word "commit & push"): INTRO span on
 ## the wire (proto v1.5) + reconnect URL fix = node v00.000.041 /
 ## phone v00.000.009
