@@ -1,0 +1,44 @@
+# VERSION RULE (Brett, 2026-09-24): every push to main must RAISE the
+# version in pyproject.toml. This checker fails the push loudly when
+# the number did not rise - so code can never again ship under an old
+# label (dbadcee shipped vectored sync while the box's web chip kept
+# saying 00.000.041).
+name: check-version-rise
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  version-must-rise:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: compare pyproject version with the previous push
+        run: |
+          set -euo pipefail
+          ver_of() { grep -m1 '^version' "$1" | cut -d'"' -f2; }
+          new_ver=$(ver_of pyproject.toml)
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            echo "first push to main - version is $new_ver, rule armed."
+            exit 0
+          fi
+          old_ver=$(git show "$before:pyproject.toml" 2>/dev/null | grep -m1 '^version' | cut -d'"' -f2 || true)
+          if [ -z "$old_ver" ]; then
+            echo "predecessor commit not readable - version is $new_ver."
+            exit 0
+          fi
+          echo "previous push: $old_ver   this push: $new_ver"
+          if [ "$new_ver" = "$old_ver" ]; then
+            echo "::error::VERSION RULE BROKEN: pyproject.toml still says $new_ver. Every push to main must raise the version. Bump it in pyproject.toml and push again."
+            exit 1
+          fi
+          if [[ ! "$new_ver" > "$old_ver" ]]; then
+            echo "::error::VERSION RULE BROKEN: the version went DOWN ($old_ver -> $new_ver)."
+            exit 1
+          fi
+          echo "version rose - OK."
