@@ -229,6 +229,27 @@ def test_foreign_channel_undecodable_honest():
     assert src.stats.decoded == 0
 
 
+def test_silent_drop_points_speak_at_debug(caplog):
+    """v0.0.050 (the silent-air-uplink trace, 2026-09-25): two drop
+    points used to vanish without a word - a group frame that will
+    not decrypt, and a decrypted #scope plaintext with no on_scope
+    callback wired. Both must speak at DEBUG, so a phone ask dying
+    there looks different from a radio that never transmitted."""
+    import logging as _logging
+    with caplog.at_level(_logging.DEBUG, logger="meshtech-node.rawsource"):
+        src = _source([])
+        src.handle_packet(
+            RxPacket(data=_frame(0x06, 0, bytes([0xAA]) + GOLDEN_MAC
+                                 + GOLDEN_CT)))
+        src2 = _source([])           # no on_scope callback wired
+        src2.handle_packet(
+            RxPacket(data=_frame(0x06, 0, _scope_group_payload())))
+    msgs = [r.message for r in caplog.records]
+    assert any("not decryptable" in m for m in msgs)
+    assert any("NO on_scope" in m for m in msgs)
+    assert src.stats.undecodable == 1    # counters stay honest
+
+
 def test_ignored_types_counted():
     src = _source([])
     obs = src.handle_packet(RxPacket(data=_frame(0x02, 2, b"\x01\x02")))

@@ -97,6 +97,25 @@ def test_missing_file_message(tmp_path):
     assert "not found" in str(exc.value)
 
 
+def test_logging_level_switch_applied_to_root():
+    """v0.0.050: config's logging.level was parsed and DEAD - DEBUG
+    could never be turned on the box (found while tracing an air
+    uplink that died in silence). node.apply_log_level must put the
+    config value on the root logger; the test restores it after."""
+    import logging as _logging
+    from meshtech_node.config import LoggingCfg
+    from meshtech_node.node import apply_log_level
+    root = _logging.getLogger()
+    previous = root.level
+    try:
+        apply_log_level(Settings(logging=LoggingCfg(level="DEBUG")))
+        assert root.level == _logging.DEBUG
+        apply_log_level(Settings(logging=LoggingCfg(level="INFO")))
+        assert root.level == _logging.INFO
+    finally:
+        root.setLevel(previous)
+
+
 def test_settings_object_direct():
     """Direct Settings() (tests/tooling) works with defaults."""
     s = Settings()

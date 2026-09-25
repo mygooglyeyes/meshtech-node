@@ -218,9 +218,15 @@ class RawPacketSource:
         only 0x5300-0x53FF data types are scope traffic (codec.py's 0x53
         magic). A valid-HMAC plaintext from another app is counted and
         dropped - never handed to the brain."""
-        if decoded is None or self.on_scope is None:
-            return
+        if decoded is None:
+            return                       # counted + logged in _from_group
         _channel, plaintext, _origin_ts = decoded
+        if self.on_scope is None:
+            # v0.0.050: the other silent exit - a decrypted ask with
+            # nothing wired to hear it used to vanish without a word.
+            log.debug("#scope plaintext (%dB) heard but NO on_scope "
+                      "callback wired - dropped", len(plaintext))
+            return
         from . import codec
         try:
             data_type = codec.peek_data_type(plaintext)
@@ -332,6 +338,14 @@ class RawPacketSource:
             # observation. Foreign-channel packets are the majority of
             # mesh traffic and carry most of the route structure.
             self.stats.undecodable += 1
+            # v0.0.050 (silent-air-uplink trace): this drop point was
+            # silent even at DEBUG - a phone's ask dying HERE looked
+            # exactly like a radio that never transmitted. DEBUG only:
+            # the channel is busy, so this line is chatter.
+            log.debug("Group frame %dB (type=0x%02X) not decryptable - "
+                      "foreign channel, bad MAC, or no key (counted "
+                      "as undecodable)",
+                      len(frame.payload), frame.payload_type)
             return self._header_observation(rx, frame)
         channel, _plaintext, origin_ts = decoded
         self.stats.decoded += 1

@@ -258,6 +258,19 @@ def _token(settings) -> Optional[str]:
         return None
 
 
+def apply_log_level(settings) -> None:
+    """Put config's logging.level on the ROOT logger (v0.0.050).
+
+    LoggingCfg was parsed and thrown away - a DEBUG line in
+    config.json did nothing, which is why an air uplink could die in
+    complete silence with nothing on the box to ask about it
+    (2026-09-25 trace). Applied right after load, before anything
+    else logs, so the boot line states the level actually in force.
+    """
+    level = getattr(getattr(settings, "logging", None), "level", "INFO")
+    logging.getLogger().setLevel(level)
+
+
 async def _main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(prog="meshtech-node")
     parser.add_argument("--config", default="config.json")
@@ -267,6 +280,11 @@ async def _main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     settings = cfgmod.load(args.config)
+    # v0.0.050: the logging.level switch is LIVE - DEBUG can be turned
+    # on the box without a code change (the silent-drop trace).
+    apply_log_level(settings)
+    log.info("Log level: %s (config logging.level)",
+             settings.logging.level)
     bench = args.bench_no_radio
 
     # SINGLE-PROCESS MODE (Brett 2026-09-20: the user controls ONE

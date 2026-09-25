@@ -196,7 +196,14 @@ class ScopeService:
             elif isinstance(obj, codec.RefreshReq):
                 await self._handle_refresh(obj, sender_prefix,
                                            via_door=via_door)
-            # Everything else is host->client only; hosts ignore it.
+            else:
+                # Everything else is host->client only; hosts ignore
+                # it - but v0.0.050 says the silence out loud: a
+                # decoded packet of the wrong type was another way
+                # for an ask to vanish without a trace.
+                log.debug("Scope packet %s from %s ignored - hosts "
+                          "answer refreshes and peer layouts only",
+                          type(obj).__name__, sender_prefix)
         except Exception as exc:
             log.exception("Scope packet handling failed: %s", exc)
 
