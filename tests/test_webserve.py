@@ -282,52 +282,43 @@ def test_state_snapshot_honest_when_silent(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_map_budget_pools_per_size(bench_pair):
-    """v1.3 (Brett): each window size has its OWN global pool - 60 km
-    (1 per 30 min), 40 km (2), 20 km (3). A spent 60 km pool refuses
-    the next 60 km ask from ANY connection but never blocks a 20 km
-    ask. Unsized asks keep the legacy 2-per-30-min pool."""
+async def test_door_asks_are_never_budgeted_or_limited(bench_pair):
+    """DOOR-BORNE ASKS (Brett 2026-09-24, 'TCP is not the mesh'):
+    back-to-back whole-area asks through the door are ALL accepted and
+    ALL answered - no global pool refusal, no per-client cooldown. The
+    radio path keeps every limit (pinned in test_service + the
+    rate-limiter tests); the wire costs nothing to speak."""
     serve, brain, source, sender, url = bench_pair
+    brain.settings.feed.refresh_cooldown_seconds = 300.0
+    brain.rate = brain.rate.__class__(300.0, 10, [])
     brain_task = asyncio.create_task(brain.run())
-    # This test pins POOL INDEPENDENCE; the 30 s per-client cooldown is
-    # a different dimension (pinned by the cooldown tests) - neutralize
-    # it here so back-to-back asks exercise the pools cleanly.
-    brain.rate._cooldown = 0.0
     try:
         async with WSClient(url) as ws:
             await ws.recv()
             await ws.recv()
-            # spend the whole 60 km pool (1 per 30-min window). Frames
-            # arrive burst-first, ack LAST (the ack follows dispatch) -
-            # wait for the ack wherever it lands in the stream.
-            await ws.send({"type": "refresh", "req_id": "s60a",
-                           "kind": "map", "span_km": 60})
-            for _ in range(40):
+            ok_acks = 0
+            answered_reqs = set()
+            for n in range(3):
+                await ws.send({"type": "refresh", "req_id": f"d{n}",
+                               "kind": "map", "span_km": 60})
+            # Drain the stream: every ask must ack accepted=True and
+            # produce its own tagged burst (in_reply_to = its req_id).
+            for _ in range(120):
                 msg = await ws.recv(timeout=10)
                 if msg["type"] == "ack":
+                    if not msg.get("accepted"):
+                        raise AssertionError(
+                            f"door ask refused: {msg}")
+                    ok_acks += 1
+                elif msg["type"] == "packet":
+                    rid = msg.get("in_reply_to")
+                    if rid is not None:
+                        answered_reqs.add(rid)
+                if ok_acks == 3 and len(answered_reqs) == 3:
                     break
-            assert msg.get("accepted") is True
-            # next 60 km ask: refused by the 60 km pool (refusal ack,
-            # nothing else - so the NEXT ack frame is the refusal)
-            await ws.send({"type": "refresh", "req_id": "s60b",
-                           "kind": "map", "span_km": 60})
-            got_refusal = False
-            for _ in range(40):
-                msg = await ws.recv(timeout=10)
-                if msg["type"] == "ack":
-                    got_refusal = not msg.get("accepted")
-                    break
-            assert got_refusal, "second 60km ask must be refused"
-            # a 20 km ask is untouched by the 60 km pool (its burst
-            # flows, then the ack)
-            await ws.send({"type": "refresh", "req_id": "s20a",
-                           "kind": "map", "span_km": 20})
-            got_ok = False
-            for _ in range(40):
-                msg = await ws.recv(timeout=10)
-                if msg["type"] == "ack":
-                    got_ok = bool(msg.get("accepted"))
-                    break
-            assert got_ok, "20km pool must be independent"
+            assert ok_acks == 3, "every door ask is accepted"
+            assert answered_reqs == {"d0", "d1", "d2"}, \
+                "every door ask is answered through the door"
     finally:
+        brain.stop()
         brain_task.cancel()

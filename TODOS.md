@@ -1,5 +1,36 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT (2026-09-24, Brett's law "TCP is not the mesh"): DOOR-BORNE
+## ASKS - 287 tests green, version 00.000.043
+An ask through the TCP data door is answered THROUGH THE DOOR: no
+radio TX, no airtime budget, no per-phone limiter, no burst gaps.
+The wire costs nothing to speak; the RADIO path keeps every limit
+(dedupe/rate/budget untouched there - test_radio_path_keeps_every
+_limit pins it). Service: on_packet(via_door=) -> the door branch
+taps every packet straight to the WS clients (would_tx=False,
+honest); dedupe STILL applies to door asks (same ask twice =
+answered once - unlimited is not a hammer). WebServe: the
+per-client verdict + global map-budget pools no longer gate door
+asks (machinery stays, dormant, for the radio path). Tests: 5 new
+(test_door_borne_asks.py) + 5 old door-limit pins rewritten to pin
+the new law. MOTIVATION: the bench hit "40km map refresh refused -
+global budget spent" while testing the phone app - the phone
+could not fill its map at all. The old web app rides the same door
+and gets the same lift.
+
+
+## BOX UPDATED (2026-09-24): VECTORED SYNC LIVE ON HILLTOP + VERSION
+## RULE (Brett) NOW ENFORCED ON GITHUB
+Brett ran `sudo ./manage.sh update`: dbadcee code installed, service
+restarted, RADIO LINK UP listen-only. Report said 00.000.041 -> 041
+because the vectored-sync commit missed the version bump; the
+commit-compare (not the version) correctly drove the copy. Label
+fixed + rule shipped in 7de41f4: version 00.000.042, and a GitHub
+Actions check (check-version-rise) now FAILS any main push whose
+pyproject version did not rise - first live run: success. NO new
+box update needed just for the label (same code); the next real
+code push rides its own bump.
+
 ## QUEUED (Brett, 2026-09-24, "one todo later"): STALE NODES PACKET
 (For the meshtech-app phone, tracked here too because the wire
 changes.) A packet naming the nodes the server has not heard from in

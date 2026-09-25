@@ -129,8 +129,7 @@ class _GlobalRefreshBudget:
 
 class WebServe:
     def __init__(self, host: str, port: int, *,
-                 token: Optional[str] = None,
-                 on_refresh: Optional[Callable[[object, str], None]] = None,
+                 token: Optional[str] = None,                  on_refresh: Optional[Callable[..., None]] = None,
                  on_client_connected: Optional[Callable[[str], None]] = None,
                  feed_info: Optional[dict] = None,
                  state_provider: Optional[Callable[[], dict]] = None,
@@ -460,40 +459,12 @@ class WebServe:
                                       "accepted": False,
                                       "reason": "listen_only"})
                 return
-            # HONEST REFUSAL pre-check: the per-client cooldown / size
-            # pool verdict, acked HERE with the client's req_id (the
-            # brain's own limiter still gates the dispatched ask -
-            # same limiter, same verdict, no double penalty).
-            if self.refresh_verdict is not None:
-                ok, reason, wait = self.refresh_verdict(conn_id, span_km)
-                if not ok:
-                    log.info("refresh refused (%s) - retry in %ds",
-                             reason, wait)
-                    await self._send(ws, {"type": "ack",
-                                          "req_id": req_id,
-                                          "accepted": False,
-                                          "reason": reason,
-                                          "retry_after_s": wait})
-                    return
-            if target == codec.REFRESH_WHOLE_AREA:
-                # Per-size global pools (Brett 2026-09-23): each window
-                # size has its own allowance (60 km 1/h, 40 km 2/h,
-                # 20 km 3/h) shared across ALL connections, so pooled
-                # browsers cannot mint req-ids around it. Sizes pool
-                # separately - a 20 km ask never consumes a 60 km slot.
-                pool = self.map_budgets.setdefault(
-                    span_km, _GlobalRefreshBudget(
-                        max_per_window=self._span_budget(span_km)))
-                if not pool.allow():
-                    wait = pool.retry_after_s()
-                    log.info("%gkm map refresh refused - global budget "
-                             "spent, %ds until the next slot", span_km, wait)
-                    await self._send(ws, {"type": "ack",
-                                          "req_id": req_id,
-                                          "accepted": False,
-                                          "reason": "map_budget",
-                                          "retry_after_s": wait})
-                    return
+            # DOOR-BORNE ASKS (Brett's law, 2026-09-24): "TCP is not
+            # the mesh." EVERY ask through this door is wire-borne:
+            # no per-client verdict, no global map-budget pools - the
+            # wire costs nothing to speak and the RADIO keeps every
+            # limit (the pools/verdict machinery stays for the radio
+            # path; the brain's own door branch answers accordingly).
             nonce = secrets.randbits(16)
             req = codec.RefreshReq(seq=nonce, kind=kind, target=target,
                                    nonce=nonce,
@@ -502,9 +473,9 @@ class WebServe:
             if self.on_refresh is not None:
                 self._req_stack.append(req_id)
                 try:
-                    # conn_id (stable per connection) feeds the brain's
-                    # per-client cooldown/cap - not the per-click req_id.
-                    await self.on_refresh(req, conn_id)
+                    # via_door: the brain answers THROUGH THE DOOR
+                    # (no radio TX, no budget, no limiter, no gaps).
+                    await self.on_refresh(req, conn_id, via_door=True)
                 finally:
                     self._req_stack.pop()
                 await self._send(ws, {"type": "ack",

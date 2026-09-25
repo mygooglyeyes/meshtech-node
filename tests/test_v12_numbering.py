@@ -63,15 +63,17 @@ def _serve_with_budget(on_refresh=None):
 
 
 @pytest.mark.asyncio
-async def test_section_target_zero_draws_global_budget():
-    """The S2 hole: kind=section target=0 IS a whole-map refresh and
-    must draw the global budget like kind=layout/map does."""
+async def test_whole_area_door_asks_are_never_budgeted():
+    """DOOR-BORNE ASKS (Brett 2026-09-24, 'TCP is not the mesh'): the
+    old global budget guarded the RADIO. Repeated whole-map asks
+    through the door all dispatch, every one flagged door-borne, and
+    no map_budget refusal is ever acked."""
     from aiohttp.test_utils import TestServer
 
     seen = []
 
-    async def on_refresh(req, sender_prefix):
-        seen.append((req.kind, req.target))
+    async def on_refresh(req, sender_prefix, via_door=False):
+        seen.append((req.kind, req.target, via_door))
 
     w = _serve_with_budget(on_refresh=on_refresh)
     server = TestServer(w.app)
@@ -82,25 +84,24 @@ async def test_section_target_zero_draws_global_budget():
         ws = await session.ws_connect(f"ws://127.0.0.1:{server.port}/feed")
         await ws.receive()                       # hello
         await ws.receive()                       # state
-        # the app's map button: kind=section target=0
-        await ws.send_json({"type": "refresh", "kind": "section",
-                            "section": 0, "req_id": "r1"})
-        await asyncio.sleep(0.05)
-        assert seen == [(codec.REFRESH_KIND_SECTION, 0)]
-        # 2 allowed globally; the THIRD whole-map ask is refused with ack
-        for i in range(2):
+        # the app's map button: kind=section target=0 - three times
+        for i in range(3):
             await ws.send_json({"type": "refresh", "kind": "section",
-                                "section": 0, "req_id": f"r{i + 2}"})
-        await asyncio.sleep(0.1)
-        acks = []
-        while True:
-            msg = await asyncio.wait_for(ws.receive(), timeout=1.0)
-            payload = json.loads(msg.data)
-            if payload.get("type") == "ack" and not payload.get("accepted"):
-                acks.append(payload)
-                break
-        assert acks[0]["reason"] == "map_budget"
-        assert acks[0]["retry_after_s"] > 0
+                                "section": 0, "req_id": f"r{i + 1}"})
+        await asyncio.sleep(0.2)
+        assert len(seen) == 3                    # all dispatched, none refused
+        assert all(v for _, _, v in seen)        # every one door-borne
+        refusals = 0
+        try:
+            while True:
+                msg = await asyncio.wait_for(ws.receive(), timeout=0.5)
+                payload = json.loads(msg.data)
+                if payload.get("type") == "ack" \
+                        and not payload.get("accepted"):
+                    refusals += 1
+        except asyncio.TimeoutError:
+            pass
+        assert refusals == 0, "the door never refuses for budget"
         await session.close()
     finally:
         await server.close()
@@ -113,7 +114,7 @@ async def test_small_section_refresh_spares_budget():
 
     seen = []
 
-    async def on_refresh(req, sender_prefix):
+    async def on_refresh(req, sender_prefix, via_door=False):
         seen.append(req.target)
 
     w = _serve_with_budget(on_refresh=on_refresh)
@@ -129,8 +130,10 @@ async def test_small_section_refresh_spares_budget():
             await ws.send_json({"type": "refresh", "kind": "section",
                                 "section": sid, "req_id": f"s{sid}"})
         await asyncio.sleep(0.1)
-        assert len(seen) == 9                    # none refused, none budgeted
-        assert w.map_budget.retry_after_s() == 0  # budget untouched
+        assert len(seen) == 9                    # none refused
+        # DOOR-BORNE (Brett 2026-09-24): the pools are radio-path
+        # machinery - the door never consults them, so they sit empty.
+        assert w.map_budget.retry_after_s() == 0
         await session.close()
     finally:
         await server.close()
@@ -143,7 +146,7 @@ async def test_kind_map_spelling_accepted():
 
     seen = []
 
-    async def on_refresh(req, sender_prefix):
+    async def on_refresh(req, sender_prefix, via_door=False):
         seen.append((req.kind, req.target))
 
     w = _serve_with_budget(on_refresh=on_refresh)

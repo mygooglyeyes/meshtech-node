@@ -63,10 +63,10 @@ async def test_refresh_uses_connection_identity_not_req_id():
     from aiohttp import web
     from aiohttp.test_utils import TestServer
 
-    seen_prefixes = []
+    seen = []
 
-    async def on_refresh(req, sender_prefix):
-        seen_prefixes.append(sender_prefix)
+    async def on_refresh(req, sender_prefix, via_door=False):
+        seen.append((sender_prefix, via_door))
 
     w = WebServe("127.0.0.1", 8710, on_refresh=on_refresh)
     server = TestServer(w.app)
@@ -83,9 +83,12 @@ async def test_refresh_uses_connection_identity_not_req_id():
         await ws.send_json({"type": "refresh", "req_id": "b",
                             "kind": "section", "section": 2})
         await asyncio.sleep(0.2)
-        assert len(seen_prefixes) == 2
-        assert seen_prefixes[0] == seen_prefixes[1]
-        assert seen_prefixes[0].startswith("ws#")
+        assert len(seen) == 2
+        assert seen[0][0] == seen[1][0]     # one identity per connection
+        assert seen[0][0].startswith("ws#")
+        # DOOR-BORNE (Brett 2026-09-24): every ask through this door
+        # is flagged as wire-borne - the brain answers accordingly.
+        assert all(v for _, v in seen)
         await ws.close()
         await session.close()
     finally:

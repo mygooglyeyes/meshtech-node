@@ -164,13 +164,20 @@ class ScopeService:
 
     # ------------------------------------------------------------------ RX
 
-    async def on_packet(self, obj: object, sender_prefix: str) -> None:
-        """ANY scope packet arrived (client uplink or peer broadcast)."""
+    async def on_packet(self, obj: object, sender_prefix: str, *,
+                        via_door: bool = False) -> None:
+        """ANY scope packet arrived (client uplink or peer broadcast).
+
+        via_door (Brett's law, 2026-09-24): the ask came through the
+        TCP data door - "TCP is not the mesh" - so the answer flows
+        through the door only: no radio TX, no budget, no limiter,
+        no burst gaps."""
         try:
             if isinstance(obj, codec.Layout):
                 self._on_peer_layout(obj)
             elif isinstance(obj, codec.RefreshReq):
-                await self._handle_refresh(obj, sender_prefix)
+                await self._handle_refresh(obj, sender_prefix,
+                                           via_door=via_door)
             # Everything else is host->client only; hosts ignore it.
         except Exception as exc:
             log.exception("Scope packet handling failed: %s", exc)
@@ -198,18 +205,26 @@ class ScopeService:
         return False
 
     async def _handle_refresh(self, req: codec.RefreshReq,
-                              sender_prefix: str) -> None:
+                              sender_prefix: str, *,
+                              via_door: bool = False) -> None:
         """VECTORED SYNC (2026-09-24): the ask may carry the client's
         change-counter marker (v1.6 REFRESH_REQ). marker 0 = "not
         vectored" = the full roster (today's behavior, byte-identical
         for old clients). marker N = the answer's INTRO batches ship
         full records ONLY for nodes changed after N, followed by a
         GONE packet listing retired prefixes (the phone REMOVES those
-        dots)."""
-        await self._handle_refresh_inner(req, sender_prefix)
+        dots).
+
+        via_door (Brett's law, 2026-09-24): "TCP is not the mesh" - a
+        door ask is answered THROUGH THE DOOR: no radio TX, no
+        airtime budget, no per-phone limiter, no burst gaps. The
+        RADIO path keeps every limit."""
+        await self._handle_refresh_inner(req, sender_prefix,
+                                         via_door=via_door)
 
     async def _handle_refresh_inner(self, req: codec.RefreshReq,
-                                    sender_prefix: str) -> None:
+                                    sender_prefix: str, *,
+                                    via_door: bool = False) -> None:
         # COMPANION MODE: a companion never answers refreshes - not on
         # the air (it has no TX mandate) and not for its own web app
         # (there is no host data to build). Heard packets fill the map;
@@ -243,13 +258,18 @@ class ScopeService:
                 self.settings.feed.multi_host and \
                 not self._route_mine(target):
             return
-        if not self.rate.allowed(sender_prefix, span_km=req.span_km):
+        # THE DOOR BRANCH (Brett's law): the limiter guards the AIR.
+        # A door-borne ask consumes no airtime and gets no cooldown -
+        # dedupe above still applies (same ask twice = answered once).
+        if not via_door and not self.rate.allowed(sender_prefix,
+                                                  span_km=req.span_km):
             log.info("Refresh from %s refused by rate limit "
                      "(kind=%d target=%d span=%s)", sender_prefix[:12],
                      req.kind, req.target,
                      ("host" if not req.span_km else f"{req.span_km}km"))
             return
-        self.rate.record(sender_prefix, span_km=req.span_km)
+        if not via_door:
+            self.rate.record(sender_prefix, span_km=req.span_km)
         # v1.3 (MAP-SIZE-DESIGN): the request may carry the client's
         # wanted window (span_km, 20/40/60 snapped; 0 = whole home box).
         # The budget was ALREADY spent above (rate.record) - the sized
@@ -283,9 +303,22 @@ class ScopeService:
                      len(gone), (len(gone) + codec.MAX_GONE_PER_PACKET - 1)
                      // codec.MAX_GONE_PER_PACKET)
         log.info("Refresh from %s: kind=%d target=%d span=%s marker=%d "
-                 "-> %d packet(s)", sender_prefix[:12], req.kind, req.target,
+                 "-> %d packet(s)%s", sender_prefix[:12], req.kind,
+                 req.target,
                  ("host" if not req.span_km else f"{req.span_km}km"),
-                 req.sync_marker, len(packets))
+                 req.sync_marker, len(packets),
+                 " (door-borne, wire only)" if via_door else "")
+        if via_door:
+            # THE DOOR'S ANSWER: wire only. No radio TX, no airtime
+            # budget, no artificial gaps - the FeedTap serves every
+            # packet straight to the connected clients.
+            for out in packets:
+                if self.feed_tap is not None:
+                    self._tap(out, would_tx=False, tx_ok=False,
+                              in_reply_to=self.feed_tap.current_req_id)
+            if gone:
+                self.builder.store.clear_gone(gone)
+            return
         await self._send_burst(packets)
         if gone:
             self.builder.store.clear_gone(gone)
