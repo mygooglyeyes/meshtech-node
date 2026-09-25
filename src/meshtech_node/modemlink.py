@@ -97,6 +97,32 @@ class ModemTransport:
                 log.exception("modem client stop raised - continuing")
         self._queue.put_nowait(None)   # unblock the iterator
 
+    # ------------------------------------------------------------- TX --
+    async def send(self, frame: bytes) -> bool:
+        """One frame to the radio - the RadioSender's TX seam.
+
+        THE MISSING SEAM (Brett's bench, 2026-09-25): this transport
+        was built listen-only (the docstring above), so the sender's
+        FIRST-EVER transmit - the day tx_enabled was finally flipped
+        - died on AttributeError before a byte reached the air. This
+        delegates to the cleanmodem client's proven send (one
+        TX_REQUEST, resolving on TX_DONE/True or TX_FAIL/False).
+
+        Never throws: no link, or a client that raises, is an honest
+        False with a plain-words log - the broadcast loop's seatbelt
+        is not the place to learn the radio is gone.
+        """
+        client = self._client
+        if self._closed or client is None:
+            log.warning("modem link not up - TX dropped (%dB)",
+                        len(frame) if frame else 0)
+            return False
+        try:
+            return bool(await client.send(frame))
+        except Exception:
+            log.exception("modem TX raised - refused honestly")
+            return False
+
     # ----------------------------------------------------------- RX ----
     async def _on_rx(self, rssi: int, snr: float, signal_rssi: int,
                      data: bytes) -> None:
