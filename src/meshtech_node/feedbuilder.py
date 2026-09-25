@@ -127,22 +127,48 @@ class FeedBuilder:
                             now: float) -> List[Tuple[Tuple[int, ...], int, List[float], float]]:
         """Routes in one section: (path, count, delays, last_heard).
 
-        A route is the tuple of repeater prefixes a packet traversed
-        (its "ghost trail"). Delays only from honest origin stamps.
+        ROUTE MEMORY (2026-09-24, Brett: routes were never meant to be
+        RAM-only): the route table is DURABLE now - fed at every packet
+        hearing (direct hops included: "a route is any persistent path
+        between two nodes"), refilled from disk at boot, so the 1-hour
+        packet window no longer bounds a route's life.
+
+        A route is the tuple of repeater prefixes a packet traversed;
+        a packet heard direct is the one-hop route (sender,). Delays
+        only from honest origin stamps.
         """
         routes: Dict[Tuple[int, ...], Dict[str, object]] = {}
+        # The durable table first (restored routes survive the window).
+        # Each route carries the section its traffic was HEARD in (its
+        # own honest anchor; see add_route) - no re-derivation needed.
+        for path, entry in self.store.routes_all():
+            if int(entry.get("section") or -1) != section_id:
+                continue
+            routes[path] = {"count": int(entry["count"]),
+                            "delays": list(entry["delays"]),
+                            "last": float(entry["last"])}
+        # The 1-hour window refines live counts/delays/last-heard.
+        # Every window observation already landed in the durable table
+        # (add() writes through at the hearing), so a window packet is
+        # NEVER re-counted on top of its durable row - that would
+        # double fresh routes. The window aggregates on its own first,
+        # then fills ONLY the paths the durable table is missing (a
+        # disk-less store, or a row already forgotten).
+        window: Dict[Tuple[int, ...], Dict[str, object]] = {}
         for obs in self.store.observations(now=now):
-            if self._section_of(obs) != section_id:
+            path = tuple(obs.path_prefixes[:MAX_PREFIXES_PER_ROUTE]) \
+                if obs.path_prefixes else ((obs.prefix,) if obs.prefix else ())
+            if not path or self._section_of(obs) != section_id:
                 continue
-            path = tuple(obs.path_prefixes[:MAX_PREFIXES_PER_ROUTE])
-            if not path:
-                continue
-            entry = routes.setdefault(path, {"count": 0, "delays": [],
+            entry = window.setdefault(path, {"count": 0, "delays": [],
                                              "last": 0.0})
             entry["count"] = int(entry["count"]) + 1
             if obs.delay_s is not None:
                 entry["delays"].append(obs.delay_s)
             entry["last"] = max(float(entry["last"]), obs.recv_ts)
+        for path, entry in window.items():
+            if path not in routes:
+                routes[path] = entry
         out: List[Tuple[Tuple[int, ...], int, List[float], float]] = []
         for path, entry in routes.items():
             delays = sorted(float(d) for d in entry["delays"])
@@ -150,6 +176,27 @@ class FeedBuilder:
                         float(entry["last"])))
         out.sort(key=lambda item: -item[1])  # busiest first
         return out
+
+    def _section_of_path(self, path: Tuple[int, ...]) -> int:
+        """Which section a DURABLE route belongs to. The anchor is the
+        route's stored sender (honest: the node actually heard at the
+        trail's start for direct routes); without one, the first
+        POSITIONED node in the path decides; nobody positioned is
+        honestly unknown (-1) - never guessed. Kept for the boot
+        window where a route predates its node facts."""
+        entry = self.store.route_entry(path)
+        sender = int(entry.get("sender") or 0) if entry else 0
+        if sender:
+            node = self.store.node_info(sender) or {}
+            lat, lon = node.get("lat"), node.get("lon")
+            if lat is not None and lon is not None:
+                return self.geometry.section_for(float(lat), float(lon))
+        for hop in path:
+            node = self.store.node_info(hop) or {}
+            lat, lon = node.get("lat"), node.get("lon")
+            if lat is not None and lon is not None:
+                return self.geometry.section_for(float(lat), float(lon))
+        return -1
 
     def section_of_observation(self, obs):
         return self.geometry.section_for(obs.lat, obs.lon) if (

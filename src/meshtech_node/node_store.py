@@ -95,6 +95,29 @@ _MIGRATIONS: List[tuple] = [
         )
         """,
     ]),
+    # ROUTE MEMORY (2026-09-24, Brett: routes were never meant to be
+    # RAM-only). One row per PATH (the trail of repeater prefixes a
+    # packet traversed; a DIRECT hop stores the sender's own prefix
+    # byte). No raw packets - the path, the use count, the MEASURED
+    # median delay (start-to-end time, honest origin stamps only) and
+    # the last-heard age the fade law runs on. A route's deletion is
+    # the only route lifecycle event stored (staleness is derived
+    # from last_heard, mirroring the node table).
+    (3, [
+        """
+        CREATE TABLE IF NOT EXISTS routes (
+            path_hex      TEXT PRIMARY KEY,   -- repeater trail hex AS HEARD ('' never; >=1 byte)
+            sender_prefix INTEGER NOT NULL DEFAULT 0,  -- last sender (0 = unknown)
+            is_direct     INTEGER NOT NULL DEFAULT 0,  -- heard straight from the sender (the 3/7 fade kind)
+            section_id    INTEGER NOT NULL DEFAULT -1, -- square the traffic was heard in (-1 = unknown)
+            first_heard   REAL NOT NULL,
+            last_heard    REAL NOT NULL,
+            packet_count  INTEGER NOT NULL DEFAULT 0,
+            delay_med_s   INTEGER NOT NULL DEFAULT 0   -- 0 = unknown (no honest stamps)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_routes_last_heard ON routes(last_heard)",
+    ]),
 ]
 
 
@@ -350,3 +373,62 @@ class NodeStore:
             cur = self._conn.execute(
                 "DELETE FROM repeaters WHERE last_heard < ?", (cutoff_ts,))
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    # -------------------------------------------------------------- routes
+
+    def upsert_route(self, *, path_bytes: bytes, first_heard: float,
+                     last_heard: float, packet_count: int,
+                     delay_med_s: int, sender_prefix: int = 0,
+                     is_direct: bool = False, section_id: int = -1,
+                     ts: Optional[float] = None) -> None:
+        """Write one route use (called from the RAM store's
+        write-through at every hearing). count/delay/last-heard are
+        REPLACE (the newest answer IS the route); first-heard keeps
+        its origin; sender_prefix updates to the latest sender.
+
+        The sender is the route's SECTION ANCHOR: at boot refill the
+        RAM positions exist only if the node table survived too - the
+        stored sender keeps the route anchored in the same home square
+        it was heard in even before any advert re-places it.
+        """
+        ts = ts if ts is not None else _now()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO routes (path_hex, sender_prefix, is_direct,
+                                    section_id, first_heard, last_heard,
+                                    packet_count, delay_med_s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path_hex) DO UPDATE SET
+                    sender_prefix = excluded.sender_prefix,
+                    is_direct     = excluded.is_direct,
+                    section_id    = excluded.section_id,
+                    last_heard    = excluded.last_heard,
+                    packet_count  = excluded.packet_count,
+                    delay_med_s   = excluded.delay_med_s,
+                    first_heard   = MIN(routes.first_heard, excluded.first_heard)
+                """,
+                (path_bytes.hex(), int(sender_prefix), 1 if is_direct else 0,
+                 int(section_id), float(first_heard), float(last_heard),
+                 int(packet_count), int(delay_med_s)),
+            )
+
+    def route_rows(self) -> List[Dict[str, object]]:
+        rows = self._conn.execute("SELECT * FROM routes").fetchall()
+        return [dict(r) for r in rows]
+
+    def route_count(self) -> int:
+        return int(self._conn.execute(
+            "SELECT COUNT(*) FROM routes").fetchone()[0])
+
+    def forget_routes(self, path_hex_list: List[bytes]) -> int:
+        """Delete the given routes (the DEAD stage of Brett's fade law,
+        mirrored RAM-side). Returns rows deleted."""
+        if not path_hex_list:
+            return 0
+        with self._conn:
+            cur = self._conn.executemany(
+                "DELETE FROM routes WHERE path_hex = ?",
+                [(p.hex(),) for p in path_hex_list])
+        total = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        return total

@@ -1,6 +1,6 @@
 [project]
 name = "meshtech-node"
-version = "00.000.045"
+version = "00.000.046"
 description = "Standalone listener + scope feed for the PiMesh radio (meshtech-node, PLAN.md)"
 requires-python = ">=3.12"
 

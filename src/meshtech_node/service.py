@@ -96,6 +96,12 @@ class ScopeService:
             center_lon=settings.area.center_lon,
             span_m=int(settings.area.span_km * 1000.0),
         )
+        # ROUTE MEMORY (2026-09-24): the store itself has no grid; it
+        # borrows this service's geometry so every heard packet stamps
+        # WHERE it was heard onto the route it forms (the route's
+        # section survives a restart that way - a trail's hops are
+        # repeater tags, not nodes, and cannot be re-placed later).
+        self.store.section_of = self.builder_section_of
         # Host identity: explicit origin (tests) > config origin_hex >
         # a random id persisted nowhere (log notes the derivation).
         if origin is not None:
@@ -151,6 +157,11 @@ class ScopeService:
         # client cannot be followed across requests. A stale deadline
         # stops repeated orphaned uplinks from re-opening the window.
         self._uplink_open_until = 0.0
+
+    def builder_section_of(self, obs) -> int:
+        """The square an observation was heard in (the builder's own
+        rule, injected into the store for route stamping)."""
+        return self.builder._section_of(obs)
 
     # ------------------------------------------------------------------ demo
 
@@ -725,6 +736,11 @@ class ScopeService:
                     # C3: prune the node table on the layout cadence (rare):
                     # 14d silent -> stale (off maps), 30d -> forgotten.
                     counts = self.store.prune_nodes(now=now)
+                    # ROUTE FADE (Brett, 2026-09-24): same rare cadence -
+                    # DIRECT silent 3d -> stale (yellow), 7d -> dead
+                    # (deleted); MULTI-HOP 7d/14d. A route's death never
+                    # touches the node table.
+                    r_stale, r_dead = self.store.prune_routes(now=now)
                     # REPEATER PRUNE (2026-09-21): the table's own expiry
                     # (30d silent tags) existed but was NEVER CALLED - the
                     # one RAM structure that could grow forever in a
@@ -732,11 +748,15 @@ class ScopeService:
                     # included. (Found in Brett's RAM-bloat audit.)
                     pruned_tags = self.external_source.repeaters.prune(now=now) \
                         if self.external_source is not None else 0
-                    if counts["stale"] or counts["forgotten"] or pruned_tags:
+                    if counts["stale"] or counts["forgotten"] or pruned_tags \
+                            or r_stale or r_dead:
                         log.info("node table pruned: %d stale, %d forgotten, "
-                                 "%d repeater tag(s) expired (table: %d nodes)",
+                                 "%d repeater tag(s) expired; routes: "
+                                 "%d stale, %d dead (table: %d nodes, %d routes)",
                                  counts["stale"], counts["forgotten"],
-                                 pruned_tags, self.store.active_nodes_ever())
+                                 pruned_tags, r_stale, r_dead,
+                                 self.store.active_nodes_ever(),
+                                 len(self.store.routes_all()))
                     pkt = self.builder.build_layout()
                     await self._send_burst([pkt], gap=0.0)
                     self.builder._last_layout = now

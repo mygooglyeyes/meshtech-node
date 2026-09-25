@@ -97,12 +97,15 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
             brain.store.disk = disk
             # BOOT REFILL: disk -> RAM before the first packet flows, so
             # a restart forgets nobody (the map is whole in seconds).
+            # ROUTE MEMORY (2026-09-24): routes refill too - they were
+            # never meant to die with the process.
             n_nodes = brain.store.refill_nodes(disk.node_rows())
             n_tags = source.repeaters.refill_from(disk.repeater_rows())
-            if n_nodes or n_tags:
+            n_routes = brain.store.refill_routes(disk.route_rows())
+            if n_nodes or n_tags or n_routes:
                 log.info("disk memory restored: %d node(s), %d repeater "
-                         "tag(s) from %s", n_nodes, n_tags,
-                         settings.storage.db_path)
+                         "tag(s), %d route(s) from %s", n_nodes, n_tags,
+                         n_routes, settings.storage.db_path)
 
     # Connect-time PULSE (Brett 2026-09-21): a new web client gets the
     # Feed-health card filled immediately. HOST feeds only - a companion

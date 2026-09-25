@@ -21,6 +21,12 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 log = logging.getLogger("meshtech-node.observations")
 
+# Routes cap their path at the same width the wire's ROUTE packet can
+# carry (MAX_PREFIXES_PER_ROUTE in feedbuilder is 8; importing it here
+# would make a loop, so the number lives in both places with a test
+# pinning them together).
+MAX_PREFIXES_PER_ROUTE = 8
+
 
 @dataclass
 class BackboneNeighbor:
@@ -81,15 +87,26 @@ class RollingStore:
     storage anywhere).
     """
 
-    def __init__(self, window_seconds: float = 3600.0):
+    def __init__(self, window_seconds: float = 3600.0,
+                 *, disk: Optional["object"] = None):
         self.window_seconds = window_seconds
         self._obs: Deque[Observation] = deque()
         # node prefix -> (lat, lon, name, last_advert_ts)
         self._nodes: Dict[int, Dict[str, object]] = {}
         # prefix -> BackboneNeighbor (direct RF links of the host box)
         self._neighbors: Dict[int, BackboneNeighbor] = {}
+        # ROUTE MEMORY (2026-09-24, Brett: routes were never meant to be
+        # RAM-only): path tuple -> {first, last, count, delays}.
+        # The 1-hour packet window stays RAM-only (scope rule); the
+        # routes DERIVED from it get the nodes' own disk memory.
+        self._routes: Dict[Tuple[int, ...], Dict[str, object]] = {}
         # Optional NodeStore (disk write-through + boot refill).
-        self.disk = None
+        self.disk = disk
+        # SECTION PLUMBING for routes: the store itself has no grid;
+        # the ingest seam sets `section_of` (an Observation -> square)
+        # so every heard packet can stamp WHERE it was heard. None =
+        # routes carry section -1 (honestly unknown).
+        self.section_of = None
         # VECTORED SYNC (2026-09-24, VECTORED-SYNC-DESIGN.md): the RAM
         # mirror of the disk counter (the disk copy is the authority;
         # this keeps RAM-only stores honest too). Private _sig/_seq
@@ -104,6 +121,187 @@ class RollingStore:
         now = time.time() if now is None else now
         self._obs.append(obs)
         self._prune(now)
+        # ROUTE MEMORY: EVERY heard packet forms a route. A packet with
+        # repeaters = the repeater trail; a packet heard DIRECT (no
+        # repeaters) = a one-hop route anchored on the sender (Brett,
+        # 2026-09-24: "a route is any persistent path between two nodes
+        # - not just multi-hop traffic"). prefix=0 (identity unknown)
+        # can prove no path endpoint, so it forms no route.
+        if obs.prefix != 0:
+            direct = not obs.path_prefixes
+            path = tuple(obs.path_prefixes[:MAX_PREFIXES_PER_ROUTE]) \
+                if obs.path_prefixes else (obs.prefix,)
+            self.add_route(path, recv_ts=obs.recv_ts, delay_s=obs.delay_s,
+                           now=now, sender_prefix=obs.prefix
+                           if direct else 0, direct=direct,
+                           section_id=self._last_section(obs))
+
+    # ------------------------------------------------- route memory
+
+    # Brett's fade law (2026-09-24), by route kind:
+    #   DIRECT (one hop, heard straight from the sender):
+    #     silent 3 days -> STALE (kept, listed yellow),
+    #     silent 7 days -> DEAD (deleted from RAM and disk).
+    #   MULTI-HOP (a repeater trail):
+    #     silent 7 days -> STALE, 14 days -> DEAD.
+    DIRECT_STALE_S = 3 * 86400.0
+    DIRECT_DEAD_S = 7 * 86400.0
+    MULTIHOP_STALE_S = 7 * 86400.0
+    MULTIHOP_DEAD_S = 14 * 86400.0
+    MAX_ROUTES = 512   # the RAM table's ceiling; disk mirrors via delete
+
+    def _last_section(self, obs: Observation) -> int:
+        """The square an observation was heard in, via the injected
+        section function (-1 = unknown / not wired)."""
+        if self.section_of is None:
+            return -1
+        try:
+            return int(self.section_of(obs))
+        except Exception:
+            return -1
+
+    @staticmethod
+    def route_is_direct(entry: Dict[str, object]) -> bool:
+        """DIRECT = the packet was heard straight from its sender (no
+        repeater relayed it). Marked EXPLICITLY at the hearing (wire
+        truth) - a path tuple of length 1 cannot distinguish "heard
+        direct" from "relayed through one repeater" (both are one
+        hop on the wire's ROUTE packet), and Brett's fade law gives
+        the two DIFFERENT lifetimes (3/7 vs 7/14)."""
+        return bool(entry.get("direct"))
+
+    def add_route(self, path: Tuple[int, ...], *, recv_ts: float,
+                  delay_s: Optional[float], now: float,
+                  sender_prefix: int = 0, direct: bool = False,
+                  section_id: int = -1) -> None:
+        """Record one use of a route (write-through to disk, best-effort
+        the same way the node table is: a database hiccup never takes
+        the RX path down).
+
+        section_id: the home square the traffic was HEARD in (the
+        observation's own section, -1 = unknown). Stored WITH the
+        route - a trail's hops are repeater tags, not nodes, so a
+        restored route's section cannot be re-derived from its path
+        after a restart; the honest memory is where it was heard.
+
+        Delay samples are CAPPED: the disk row stores count + median,
+        and a route with a hundred thousand uses must not drag a
+        hundred-thousand-element list through RAM forever. Keeping the
+        newest 64 keeps the median honest to recent behavior.
+        """
+        entry = self._routes.setdefault(
+            path, {"first": recv_ts, "last": recv_ts, "count": 0,
+                   "delays": [], "sender": 0, "direct": False,
+                   "section": section_id})
+        entry["last"] = max(float(entry["last"]), recv_ts)
+        entry["count"] = int(entry["count"]) + 1
+        if section_id >= 0:
+            entry["section"] = section_id
+        if direct:
+            entry["direct"] = True
+        if sender_prefix:
+            entry["sender"] = sender_prefix
+        if delay_s is not None:
+            delays = entry["delays"]
+            delays.append(float(delay_s))
+            if len(delays) > 64:
+                del delays[:-64]
+        self._disk_route(path, entry, now=now)
+
+    def _disk_route(self, path: Tuple[int, ...], entry: Dict[str, object],
+                    *, now: float) -> None:
+        if self.disk is None:
+            return
+        try:
+            delays = sorted(float(d) for d in entry["delays"])
+            med = int(round(delays[len(delays) // 2])) if delays else 0
+            self.disk.upsert_route(
+                path_bytes=bytes(p & 0xFF for p in path),
+                first_heard=float(entry["first"]),
+                last_heard=float(entry["last"]),
+                packet_count=int(entry["count"]),
+                delay_med_s=med,
+                sender_prefix=int(entry.get("sender") or 0),
+                is_direct=bool(entry.get("direct")),
+                section_id=int(entry.get("section") or -1),
+                ts=now)
+        except Exception:
+            log.exception("route disk write-through failed (path %s) "
+                          "- RAM keeps the truth",
+                          ".".join(f"{p:02x}" for p in path))
+
+    def refill_routes(self, rows: List[dict]) -> int:
+        """Boot refill: restore the disk route table into RAM with their
+        ORIGINAL first/last times (a week-silent route is still a week
+        silent). RAM wins where both exist. Returns rows restored."""
+        restored = 0
+        for row in rows:
+            try:
+                path = tuple(byte for byte in bytes.fromhex(
+                    str(row.get("path_hex") or "")))
+            except ValueError:
+                continue          # corrupt row: skip, never crash boot
+            if not path or path in self._routes:
+                continue
+            self._routes[path] = {
+                "first": float(row.get("first_heard") or 0.0),
+                "last": float(row.get("last_heard") or 0.0),
+                "count": int(row.get("packet_count") or 0),
+                "sender": int(row.get("sender_prefix") or 0),
+                "direct": bool(row.get("is_direct")),
+                "section": int(row.get("section_id") or -1),
+                "delays": ([float(row["delay_med_s"])]
+                           if row.get("delay_med_s") else []),
+            }
+            restored += 1
+        if restored:
+            log.info("route table refilled from disk: %d route(s) "
+                     "restored (RAM table now %d)", restored,
+                     len(self._routes))
+        return restored
+
+    def prune_routes(self, *, now: Optional[float] = None) -> Tuple[int, int]:
+        """Brett's route fade (the mirror of prune_nodes): a DIRECT
+        route silent 3 days goes STALE (kept, listed yellow) and 7 days
+        DEAD (deleted); a MULTI-HOP route 7/14. Returns the counts for
+        honest logging. A route's death never touches the node table -
+        nodes keep their own 14/30 law."""
+        now = time.time() if now is None else now
+        stale = dead = 0
+        dead_paths = []
+        for path, entry in self._routes.items():
+            age = now - float(entry["last"])
+            if self.route_is_direct(entry):
+                stale_after, dead_after = (self.DIRECT_STALE_S,
+                                           self.DIRECT_DEAD_S)
+            else:
+                stale_after, dead_after = (self.MULTIHOP_STALE_S,
+                                           self.MULTIHOP_DEAD_S)
+            if age > dead_after:
+                dead_paths.append(path)
+            elif age > stale_after:
+                entry["stale"] = True
+                stale += 1
+        for path in dead_paths:
+            del self._routes[path]
+            dead += 1
+        if self.disk is not None and dead_paths:
+            try:
+                self.disk.forget_routes(
+                    [bytes(p & 0xFF for p in path) for path in dead_paths])
+            except Exception:
+                log.exception("route disk prune failed - RAM stays the "
+                              "truth")
+        return stale, dead
+
+    def routes_all(self) -> List[Tuple[Tuple[int, ...], Dict[str, object]]]:
+        """Every route held (fresh AND stale - the phone lists stale
+        routes in yellow; dead ones are already deleted)."""
+        return list(self._routes.items())
+
+    def route_entry(self, path: Tuple[int, ...]) -> Optional[Dict[str, object]]:
+        """One route's record, or None."""
+        return self._routes.get(path)
 
     # ------------------------------------------------- vectored sync
 

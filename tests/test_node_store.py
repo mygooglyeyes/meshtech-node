@@ -37,10 +37,13 @@ def test_scope_nodes_and_repeaters_only(store):
     """The agreed scope rule: ONLY the two data tables exist. No
     packets, no messages - nothing raw, on any device. (Vectored sync
     2026-09-24 adds sync_state + gone_pending: bookkeeping tables
-    holding COUNTERS and retirement notices - still no raw data.)"""
+    holding COUNTERS and retirement notices - still no raw data.
+    Route memory 2026-09-24 adds routes: one row per PATH with its
+    use count and measured median delay - route facts, not packets.)"""
     tables = {r["name"] for r in store._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"nodes", "repeaters", "sync_state", "gone_pending"}
+    assert tables == {"nodes", "repeaters", "sync_state", "gone_pending",
+                      "routes"}
 
 
 # ------------------------------------------------------------- write-through
