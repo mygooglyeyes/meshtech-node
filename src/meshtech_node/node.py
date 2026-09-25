@@ -102,6 +102,11 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
             n_nodes = brain.store.refill_nodes(disk.node_rows())
             n_tags = source.repeaters.refill_from(disk.repeater_rows())
             n_routes = brain.store.refill_routes(disk.route_rows())
+            # BOOT RE-ANCHOR (v00.000.047, Brett 2026-09-25): saved
+            # routes whose square was unknown when first heard are
+            # re-checked against the node facts now back in RAM -
+            # placed routes gain their square, the rest stay held.
+            brain.store.reanchor_routes()
             if n_nodes or n_tags or n_routes:
                 log.info("disk memory restored: %d node(s), %d repeater "
                          "tag(s), %d route(s) from %s", n_nodes, n_tags,

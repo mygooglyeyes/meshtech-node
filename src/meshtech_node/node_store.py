@@ -33,7 +33,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 log = logging.getLogger("meshtech-node.nodestore")
 

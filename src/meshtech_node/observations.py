@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
 
 log = logging.getLogger("meshtech-node.observations")
@@ -107,6 +107,11 @@ class RollingStore:
         # so every heard packet can stamp WHERE it was heard. None =
         # routes carry section -1 (honestly unknown).
         self.section_of = None
+        # STORED-ROUTE RESOLVER (v00.000.047): the ingest seam sets
+        # `path_section_of` (a path -> square lookup through the node
+        # facts) so a boot refill can re-anchor routes whose square
+        # was unknown when first heard. None = no re-check.
+        self.path_section_of = None
         # VECTORED SYNC (2026-09-24, VECTORED-SYNC-DESIGN.md): the RAM
         # mirror of the disk counter (the disk copy is the authority;
         # this keeps RAM-only stores honest too). Private _sig/_seq
@@ -132,8 +137,8 @@ class RollingStore:
             path = tuple(obs.path_prefixes[:MAX_PREFIXES_PER_ROUTE]) \
                 if obs.path_prefixes else (obs.prefix,)
             self.add_route(path, recv_ts=obs.recv_ts, delay_s=obs.delay_s,
-                           now=now, sender_prefix=obs.prefix
-                           if direct else 0, direct=direct,
+                           now=now, sender_prefix=obs.prefix,
+                           direct=direct,
                            section_id=self._last_section(obs))
 
     # ------------------------------------------------- route memory
@@ -259,6 +264,35 @@ class RollingStore:
                      "restored (RAM table now %d)", restored,
                      len(self._routes))
         return restored
+
+    def reanchor_routes(self) -> int:
+        """Startup re-check (Brett's v00.000.047, 2026-09-25): a
+        stored route with an unknown square gets one NOW if its facts
+        have arrived since (sender, trail end, or a placed hop).
+        RAM and disk move together; still-unplaceable routes stay
+        honestly held (-1), never guessed. Returns rows placed."""
+        if self.path_section_of is None:
+            return 0
+        placed = 0
+        for path, entry in self._routes.items():
+            if int(entry.get("section") or -1) >= 0:
+                continue
+            try:
+                section = int(self.path_section_of(path))
+            except Exception:
+                log.exception("route re-anchor failed (path %s) - the "
+                              "route stays held",
+                              ".".join(f"{p:02x}" for p in path))
+                continue
+            if section < 0:
+                continue
+            entry["section"] = section
+            self._disk_route(path, entry, now=time.time())
+            placed += 1
+        if placed:
+            log.info("route re-anchor: %d route(s) gained their square "
+                     "at boot", placed)
+        return placed
 
     def prune_routes(self, *, now: Optional[float] = None) -> Tuple[int, int]:
         """Brett's route fade (the mirror of prune_nodes): a DIRECT

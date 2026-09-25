@@ -35,17 +35,11 @@ Two implementations:
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import math
 import random
 import struct
-import time
-from pathlib import Path
-from typing import AsyncIterator, Callable, List, Optional
+from typing import List, Optional
 
-from .config import Settings
 from .observations import BackboneNeighbor, Observation
 
 log = logging.getLogger("meshtech-scope.source")

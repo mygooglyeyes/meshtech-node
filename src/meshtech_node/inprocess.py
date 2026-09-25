@@ -18,7 +18,6 @@ to start - a scope feed with no radio is not this program.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 log = logging.getLogger("meshtech-node.inprocess")
 

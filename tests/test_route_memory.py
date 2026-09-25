@@ -269,3 +269,82 @@ def test_route_timing_median_on_wire():
                                              now=now)
     route = codec.decode_route(packets[0].payload[3:])
     assert route.delay_med_s == 2
+
+
+# -------------------------------- sender + trail anchor (v00.000.047)
+
+
+def test_multihop_route_records_its_sender(disk):
+    """Brett (2026-09-25): EVERY route records who sent it - not just
+    one-hop routes. The sender is the anchor the boot re-check looks
+    up, so a multi-hop row must store it too."""
+    builder, store = make_builder(disk=disk)
+    now = time.time()
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x77,
+                          lat=None, lon=None,
+                          path_prefixes=[0xAB, 0xCD]), now=now)
+    rows = disk.route_rows()
+    assert len(rows) == 1
+    assert rows[0]["path_hex"] == "abcd"
+    assert rows[0]["sender_prefix"] == 0x77   # stored, not 0
+
+
+def test_unplaced_route_is_held_from_every_section():
+    """Brett's HOLD rule (2026-09-25): a route nobody can place (no
+    sender position, no trail end) sits in NO square - it is never
+    guessed onto any section's list."""
+    builder, store = make_builder()
+    now = time.time()
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x99,
+                          lat=None, lon=None,
+                          path_prefixes=[0xAA, 0xBB]), now=now)
+    assert store.route_entry((0xAA, 0xBB))["section"] == -1
+    for sid in range(1, builder.geometry.section_count + 1):
+        assert builder._routes_for_section(sid, now=now) == []
+
+
+def test_trail_far_end_places_the_route():
+    """Brett's recipient rule (2026-09-25): sender not mapped -> the
+    trail's FAR END (the last repeater we heard send it) places the
+    route. Facts can arrive later; the next hearing stamps them in."""
+    builder, store = make_builder()
+    now = time.time()
+    obs = Observation(recv_ts=now, origin_ts=None, prefix=0x90,
+                      lat=None, lon=None, path_prefixes=[0xAB, 0xCD])
+    store.add(obs, now=now)
+    assert store.route_entry((0xAB, 0xCD))["section"] == -1   # held
+    # the far end becomes known (its advert finally heard)
+    store.add_position(0xCD, 37.0, -122.0, name="LastHop", now=now)
+    later = now + 1.0
+    store.add(obs, now=later)          # heard again with facts present
+    assert store.route_entry((0xAB, 0xCD))["section"] == 5
+    assert [p for p, _, _, _ in
+            builder._routes_for_section(5, now=later)] == [(0xAB, 0xCD)]
+
+
+def test_startup_reanchor_places_stored_routes(disk):
+    """Brett's v00.000.047 boot re-check: saved routes re-examine
+    their square once node facts are back - a sender placed since the
+    last run gives the route its square; the unplaceable one stays
+    honestly held (-1), never guessed."""
+    builder, store = make_builder(disk=disk)
+    now = time.time()
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x21,
+                          lat=None, lon=None, path_prefixes=[]), now=now)
+    store.add(Observation(recv_ts=now, origin_ts=None, prefix=0x33,
+                          lat=None, lon=None, path_prefixes=[]), now=now)
+    assert {r["section_id"] for r in disk.route_rows()} == {-1}
+    # BOOT: fresh store + refill + the injected path resolver
+    store2 = RollingStore(window_seconds=3600.0, disk=disk)
+    store2.section_of = builder_section_of_for(37.0, -122.0)
+    builder2, _ = make_builder(disk=disk)
+    builder2.store = store2
+    store2.path_section_of = builder2._section_of_path
+    store2.refill_routes(disk.route_rows())
+    # node facts arrive before the re-check (nodes refill first at boot)
+    store2.add_position(0x21, 37.0, -122.0, name="Anchor", now=now)
+    assert store2.reanchor_routes() == 1
+    assert store2.route_entry((0x21,))["section"] == 5
+    assert store2.route_entry((0x33,))["section"] == -1   # still held
+    rows = {r["path_hex"]: r["section_id"] for r in disk.route_rows()}
+    assert rows == {"21": 5, "33": -1}                    # disk moved too

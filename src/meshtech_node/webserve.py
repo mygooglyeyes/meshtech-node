@@ -23,14 +23,12 @@ back as packets tagged with in_reply_to (req_id).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac as hmac_mod
 import itertools
 import json
 import logging
 import os
 import secrets
-import struct
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -151,13 +149,6 @@ class WebServe:
         self.map_budgets: Dict[float, _GlobalRefreshBudget] = {
             0.0: self.map_budget,   # unsized/legacy asks share the old pool
         }
-        # Brett's load-balanced hourly allowances by window size.
-        # Window 30 min like the legacy budget: a 60 km ask (1/h) =
-        # 1 per 30-min window, 40 km (2/h) = 2... wait - the design
-        # says PER HOUR; the window here stays 30 min per the legacy
-        # shape, so the per-30-min allowance is HALF the hourly cap
-        # (rounded up) to keep the sliding window honest at both scales.
-        self._span_hourly = {60.0: 1, 40.0: 2, 20.0: 3}
         # state_provider = the brain's honest state snapshot (listener
         # + feed truth the BLE path can never see); None -> nulls.
         self.state_provider = state_provider
@@ -179,14 +170,6 @@ class WebServe:
         self.app = web.Application()
         self.app.router.add_get("/feed", self._ws_handler)
         self._runner: Optional[web.AppRunner] = None
-
-    def _span_budget(self, span_km: float) -> int:
-        """Per-30-min allowance for a window size: half its hourly cap,
-        minimum 1. (Legacy 0.0 pool keeps the old 2-per-30-min.)"""
-        if not span_km or span_km <= 0:
-            return 2
-        hourly = self._span_hourly.get(round(span_km), 1)
-        return max(1, hourly // 2 + (hourly % 2))
 
     @property
     def current_req_id(self) -> Optional[str]:

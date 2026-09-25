@@ -24,7 +24,6 @@ BENCH-CHECKLIST full-header proof (the thing openhop destroyed).
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Awaitable, Callable, Optional
 

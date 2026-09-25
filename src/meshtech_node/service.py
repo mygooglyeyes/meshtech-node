@@ -22,13 +22,12 @@ from typing import Optional
 
 from . import codec
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
-from .client import CompanionClient
 from .config import Settings
 from .feedbuilder import FeedBuilder, OutPacket, route_id as route_id_of
 from .grid import GridGeometry
 from .observations import RollingStore
 from .packetsource import (
-    DemoSource, contact_row, decode_advert_payload,
+    DemoSource, contact_row,
     neighbor_of, node_class_of, row_prefix_of,
 )
 from .peers import PeerTable, SectionOwners
@@ -119,6 +118,10 @@ class ScopeService:
         self.tx_enabled = settings.feed.tx_enabled
         self.builder = FeedBuilder(settings, self.store, self.geometry,
                                    self.budget, origin=self.origin)
+        # The stored-route resolver for the v00.000.047 boot re-anchor
+        # (after the builder exists): RAM rows with no square re-check
+        # through the builder's sender/trail facts at refill time.
+        self.store.path_section_of = self.builder._section_of_path
         self.peers = PeerTable()
         self.owners = SectionOwners(self.origin, self.geometry, self.peers)
         self.dedupe = RefreshDedupe(ttl_seconds=600.0)
@@ -386,8 +389,24 @@ class ScopeService:
             # fresh connect draws dots but shows "No routes yet" until
             # the next cadence beat or a manual refresh.
             for sid in range(1, self.geometry.section_count + 1):
-                if self._i_own(sid):
-                    burst.append(self.builder.build_sect_sum(sid))
+                if not self._i_own(sid):
+                    continue
+                burst.append(self.builder.build_sect_sum(sid))
+                if via_door:
+                    # ROUTE DETAILS ON THE INITIAL TCP LOAD (Brett,
+                    # 2026-09-25, v00.000.047): the connect burst
+                    # carries EVERY placed route of every owned
+                    # square - all of them, no tap-ask's top-3 cap.
+                    # _routes_for_section only answers for a KNOWN
+                    # square, so an unplaceable route (section -1)
+                    # stays honestly HELD off the wire. Door-only by
+                    # rule: the radio burst never grows.
+                    routes = self.builder._routes_for_section(
+                        sid, now=time.time())
+                    for path, _c, _d, _l in routes:
+                        pkt = self.builder.build_route(sid, path)
+                        if pkt:
+                            burst.append(pkt)
         burst.append(self.build_pulse_now())
         log.info("PULSE on demand (%s%s%s) - uptime %d min",
                  reason, " + LAYOUT" if with_layout else "",

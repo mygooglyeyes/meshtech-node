@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from .rawsource import RxPacket

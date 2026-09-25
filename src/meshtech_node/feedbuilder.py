@@ -103,6 +103,17 @@ class FeedBuilder:
             node = self.store.node_info(obs.prefix) or {}
             lat, lon = node.get("lat"), node.get("lon")
             if lat is None or lon is None:
+                # RECIPIENT = THE TRAIL (Brett, 2026-09-25): when the
+                # sender is not one of our mapped nodes, the trail's
+                # FAR END - the last repeater we heard send it -
+                # places the traffic. Beyond that: honestly -1
+                # (held), never guessed.
+                if obs.path_prefixes:
+                    end = self.store.node_info(obs.path_prefixes[-1]) or {}
+                    elat, elon = end.get("lat"), end.get("lon")
+                    if elat is not None and elon is not None:
+                        return self.geometry.section_for(float(elat),
+                                                         float(elon))
                 return -1
             return self.geometry.section_for(float(lat), float(lon))
         return self.geometry.section_for(obs.lat, obs.lon)
@@ -179,15 +190,25 @@ class FeedBuilder:
 
     def _section_of_path(self, path: Tuple[int, ...]) -> int:
         """Which section a DURABLE route belongs to. The anchor is the
-        route's stored sender (honest: the node actually heard at the
-        trail's start for direct routes); without one, the first
-        POSITIONED node in the path decides; nobody positioned is
-        honestly unknown (-1) - never guessed. Kept for the boot
-        window where a route predates its node facts."""
+        route's stored sender (outgoing; honest: the node actually
+        heard at the trail's start for direct routes), then the
+        trail's FAR END (incoming - the last repeater we heard send
+        it; Brett, 2026-09-25), then any POSITIONED node in the path;
+        nobody positioned is honestly unknown (-1) - never guessed.
+        The boot re-check calls this where a route predates its node
+        facts."""
         entry = self.store.route_entry(path)
         sender = int(entry.get("sender") or 0) if entry else 0
         if sender:
             node = self.store.node_info(sender) or {}
+            lat, lon = node.get("lat"), node.get("lon")
+            if lat is not None and lon is not None:
+                return self.geometry.section_for(float(lat), float(lon))
+        # THE TRAIL'S FAR END (Brett, 2026-09-25: recipient = trail -
+        # the last repeater we heard send it) decides before the
+        # sender-side hop scan below.
+        if path:
+            node = self.store.node_info(path[-1]) or {}
             lat, lon = node.get("lat"), node.get("lon")
             if lat is not None and lon is not None:
                 return self.geometry.section_for(float(lat), float(lon))

@@ -35,7 +35,7 @@ except ImportError:                    # honest: the gate degrades, loudly
     VerifyKey = None
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from Crypto.Cipher import AES

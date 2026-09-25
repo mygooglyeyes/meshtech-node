@@ -25,7 +25,6 @@ import asyncio
 import hashlib
 import logging
 import struct
-import time
 from typing import Awaitable, Callable, Optional
 
 from . import codec

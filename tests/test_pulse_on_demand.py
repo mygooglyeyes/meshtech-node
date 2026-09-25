@@ -176,3 +176,39 @@ async def test_section_refresh_does_not_carry_a_pulse():
     await svc._handle_refresh(req, "ws#1")
     kinds = [dt for dt, _p, _w, _t in svc.tapped]
     assert 0x5301 not in kinds
+
+
+@pytest.mark.asyncio
+async def test_connect_burst_carries_all_placed_routes():
+    """THE INITIAL TCP LOAD (Brett, v00.000.047, 2026-09-25): the
+    door's connect burst carries FULL route details for every placed
+    route of every home square - ALL of them, no tap-ask's top-3 cap.
+    A route with no known square stays HELD off the wire."""
+    from meshtech_node.codec import TYPE_ROUTE, decode_route
+    from meshtech_node.feedbuilder import _route_id
+    from meshtech_node.observations import Observation
+    svc = _TappedService()
+    svc.attach_tap()
+    now = __import__("time").time()
+    lat = svc.settings.area.center_lat + 0.001
+    lon = svc.settings.area.center_lon + 0.001
+    # FOUR placed routes: senders that are on the map (positioned)
+    for prefix in (0x81, 0x82, 0x83, 0x84):
+        svc.builder.store.add(Observation(
+            recv_ts=now, origin_ts=now - 1.0, prefix=prefix,
+            lat=lat, lon=lon, path_prefixes=[]), now=now)
+    # ONE held route: sender and trail both unknown -> no square
+    svc.builder.store.add(Observation(
+        recv_ts=now, origin_ts=None, prefix=0x99,
+        lat=None, lon=None, path_prefixes=[0xAA, 0xBB]), now=now)
+    await svc.pulse_now(reason="test-connect", with_layout=True,
+                        via_door=True)
+    kinds = [dt for dt, _p, _w, _t in svc.tapped]
+    assert kinds[0] == 0x5305            # LAYOUT still leads
+    assert kinds[-1] == 0x5301           # PULSE still closes
+    routes = [decode_route(p[3:]) for dt, p, _w, _t in svc.tapped
+              if dt == TYPE_ROUTE]
+    assert len(routes) == 4              # ALL placed routes, no cap
+    assert all(r.section_id == 5 for r in routes)  # known squares
+    held_id = _route_id((0xAA, 0xBB))
+    assert held_id not in {r.route_id for r in routes}  # stays held
