@@ -130,7 +130,7 @@ class _GlobalRefreshBudget:
 class WebServe:
     def __init__(self, host: str, port: int, *,
                  token: Optional[str] = None,                  on_refresh: Optional[Callable[..., None]] = None,
-                 on_client_connected: Optional[Callable[[str], None]] = None,
+                 on_client_connected: Optional[Callable[..., None]] = None,
                  feed_info: Optional[dict] = None,
                  state_provider: Optional[Callable[[], dict]] = None,
                  refresh_verdict: Optional[Callable[[str, float], tuple]] = None):
@@ -366,7 +366,10 @@ class WebServe:
             # connection (the pulse cadence will catch up anyway).
             if self.on_client_connected is not None:
                 try:
-                    await self.on_client_connected()
+                    # PATH SYMMETRY (Brett, 2026-09-24): this burst is
+                    # triggered BY a door client, so it leaves ON THE
+                    # DOOR (via_door=True) - never a radio attempt.
+                    await self.on_client_connected(via_door=True)
                 except Exception:
                     log.exception("connect-pulse failed - client stays "
                                   "connected (cadence will catch up)")

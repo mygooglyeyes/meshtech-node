@@ -111,7 +111,8 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     # LAYOUT map frame, so the area grid draws the moment the app
     # connects - no refresh press needed.
     connect_pulse = (None if settings.feed.companion_mode
-                     else lambda: brain.pulse_now(with_layout=True))
+                     else lambda **kw: brain.pulse_now(with_layout=True,
+                                                       **kw))
     serve = webserve.WebServe(
         settings.webserve.host, settings.webserve.port,
         token=_token(settings),

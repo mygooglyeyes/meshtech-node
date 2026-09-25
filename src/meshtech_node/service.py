@@ -107,6 +107,10 @@ class ScopeService:
         self.budget = BudgetLimiter(
             settings.radio, settings.feed.max_packets_per_hour,
             settings.feed.max_duty_percent)
+        # The service's own TX posture (the shell also sets it; a
+        # default here keeps a shell-less brain honest - config's
+        # tx_enabled IS the source of truth, never assumed True).
+        self.tx_enabled = settings.feed.tx_enabled
         self.builder = FeedBuilder(settings, self.store, self.geometry,
                                    self.budget, origin=self.origin)
         self.peers = PeerTable()
@@ -339,13 +343,17 @@ class ScopeService:
         return pulse
 
     async def pulse_now(self, *, reason: str = "pulse_now",
-                        with_layout: bool = False) -> None:
+                        with_layout: bool = False,
+                        via_door: bool = False) -> None:
         """Build and send a PULSE immediately. Called when a new web
         client connects (Brett, 2026-09-21: a fresh app must see the
         Feed-health card fill right away, not wait up to one cadence).
-        Airtime-honest: one ~20 B packet through the usual budget; with
-        TX off it is refused on the air and STILL served on the wire
-        tap - exactly the cadence pulse's behavior.
+
+        PATH SYMMETRY (Brett, 2026-09-24): data leaves on the path it
+        came in on. via_door=True - the burst was triggered BY a door
+        client - leaves ON THE DOOR: no radio TX attempt, no budget,
+        no gaps, no refusals. A radio-path burst (the cadence) keeps
+        its radio route, unchanged.
 
         with_layout=True (the CONNECT case, Brett 2026-09-21): the burst
         opens with the LAYOUT (map frame) first, so a freshly opened app
@@ -366,9 +374,20 @@ class ScopeService:
                 if self._i_own(sid):
                     burst.append(self.builder.build_sect_sum(sid))
         burst.append(self.build_pulse_now())
-        log.info("PULSE on demand (%s%s) - uptime %d min",
+        log.info("PULSE on demand (%s%s%s) - uptime %d min",
                  reason, " + LAYOUT" if with_layout else "",
+                 " (door-borne, wire only)" if via_door else "",
                  int(time.time() - self.started_at) // 60)
+        if via_door:
+            # THE DOOR'S CONNECT BURST: straight to the wire tap -
+            # every packet, zero radio attempts, zero gaps.
+            for out in burst:
+                if self.feed_tap is not None:
+                    self._tap(out, would_tx=False, tx_ok=False,
+                              in_reply_to=None)
+            if with_layout:
+                await self._send_intro_roster(via_door=True)
+            return
         await self._send_burst(burst, gap=0.0)
         if with_layout:
             # NODE ROSTER (Brett, 2026-09-21): the connect burst also
@@ -377,7 +396,7 @@ class ScopeService:
             # only after a refresh press.
             await self._send_intro_roster()
 
-    async def _send_intro_roster(self) -> None:
+    async def _send_intro_roster(self, *, via_door: bool = False) -> None:
         """Send INTRO batches until every known node has gone out once.
 
         build_intro_batch cycles forever (the cadence uses that to
@@ -399,7 +418,12 @@ class ScopeService:
                 break
             fresh = [e for e in codec.decode_any(pkt.payload).entries
                      if e.prefix not in seen]
-            await self._send_burst([pkt], gap=0.0)
+            if via_door:
+                if self.feed_tap is not None:
+                    self._tap(pkt, would_tx=False, tx_ok=False,
+                              in_reply_to=None)
+            else:
+                await self._send_burst([pkt], gap=0.0)
             if not fresh:
                 break        # this batch added nothing new - roster done
             seen.update(e.prefix for e in fresh)

@@ -141,6 +141,40 @@ def test_radio_path_keeps_every_limit():
     asyncio.run(run())
 
 
+def test_connect_burst_leaves_on_the_path_it_arrived_on():
+    """PATH SYMMETRY (Brett, 2026-09-24): the connect burst is
+    triggered BY a door client, so it leaves ON THE DOOR - no radio
+    TX attempt, no refusals, no warnings. The radio-path connect
+    (cadence-triggered) is pinned unchanged in the next test."""
+    async def run():
+        svc = make_service()
+        radio = FakeRadio()
+        svc.client = radio
+        tap = FakeTap()
+        svc.feed_tap = tap
+        await svc.pulse_now(reason="connect", with_layout=True,
+                            via_door=True)
+        types = {t for t, _ in tap.served}
+        assert codec.TYPE_LAYOUT in types, "the map frame rides the door"
+        assert codec.TYPE_PULSE in types, "the pulse rides the door"
+        assert radio.sent == [], \
+            "a door client's connect burst must never touch the radio"
+    asyncio.run(run())
+
+
+def test_radio_triggered_connect_burst_still_uses_radio():
+    """Symmetry cuts both ways: a burst NOT triggered by the door
+    (the cadence loop) keeps its radio path, unchanged."""
+    async def run():
+        svc = make_service()
+        radio = FakeRadio()
+        svc.client = radio
+        svc.feed_tap = FakeTap()
+        await svc.pulse_now(reason="cadence", with_layout=False)
+        assert radio.sent, "the cadence pulse still flies on the radio"
+    asyncio.run(run())
+
+
 def test_door_ask_dedupe_still_applies():
     """Honesty guard: the same door ask (same nonce) twice in a row is
     a duplicate - answered once. The door is unlimited, not a hammer."""

@@ -1,5 +1,21 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## BUILT (2026-09-24, Brett's law): PATH SYMMETRY - data leaves on
+## the path it came in on - 289 tests green, version 00.000.044
+The connect burst (PULSE + LAYOUT + section summaries + full INTRO
+roster) was still radio-first: triggered BY a door client but
+attempting radio TX for every packet (the bench wall of "TX
+refused" warnings) and, with TX ON, it would have broadcast the
+whole map on air per connect. Now: pulse_now(via_door=) - the
+door-triggered connect burst leaves ON THE DOOR (tapped straight
+to the WS clients, zero radio attempts); the cadence-triggered
+burst keeps its radio path (pinned by test, symmetry cuts both
+ways). Latent gap fixed en route: ScopeService now owns its own
+tx_enabled default (a shell-less brain no longer AttributeError
+in _send_burst; config stays the source of truth). Tests: 2 new
+symmetry pins + the suite green.
+
+
 ## BUILT (2026-09-24, Brett's law "TCP is not the mesh"): DOOR-BORNE
 ## ASKS - 287 tests green, version 00.000.043
 An ask through the TCP data door is answered THROUGH THE DOOR: no
