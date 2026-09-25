@@ -338,12 +338,68 @@ class ScopeService:
                 if self.feed_tap is not None:
                     self._tap(out, would_tx=False, tx_ok=False,
                               in_reply_to=self.feed_tap.current_req_id)
+            if target == codec.REFRESH_WHOLE_AREA:
+                self._tap_answer_roster(req, packets)
             if gone:
                 self.builder.store.clear_gone(gone)
             return
         await self._send_burst(packets)
         if gone:
             self.builder.store.clear_gone(gone)
+
+    def _tap_answer_roster(self, req, packets) -> None:
+        """THE FULL ROSTER IN A WHOLE-AREA DOOR ANSWER (Brett,
+        2026-09-25; VECTORED-SYNC-DESIGN: "marker 0 gets the full
+        roster").
+
+        build_refresh_response packs ONE intro packet (a few nodes) -
+        fine for the AIR (the cadence pushes batches one at a time),
+        wrong for the DOOR: a phone that missed the connect burst
+        filled FOUR NODES PER REFRESH PRESS (Brett: "press it a
+        bunch of times"). The wire costs nothing to speak, so the
+        door answer loops - window-relative offsets and the marker
+        filter kept (the same packet builder) - until every node the
+        ask owes has gone out. Radio bursts never call this; the air
+        stays lean (test_radio_whole_area_answer_stays_lean pins it).
+        """
+        if self.feed_tap is None:
+            return
+        b = self.builder
+        sized, _km = b._sized_geometry(req.span_km)
+        known = b.store.known_nodes()
+        if req.sync_marker:
+            changed = set(b.store.nodes_changed_since(req.sync_marker))
+            known = [p for p in known if p in changed]
+        seen = set()
+        for out in packets:
+            if out.data_type == codec.TYPE_INTRO:
+                try:
+                    seen.update(e.prefix for e
+                                in codec.decode_any(out.payload).entries)
+                except Exception:
+                    log.warning("answer roster: first intro did not "
+                                "decode - the loop rebuilds from the "
+                                "cursor")
+        while len(seen) < len(known):
+            pkt = b._build_intro_for(sized, now=time.time(),
+                                     sync_marker=req.sync_marker)
+            if pkt is None:
+                break
+            try:
+                fresh = ({e.prefix for e
+                          in codec.decode_any(pkt.payload).entries}
+                         - seen)
+            except Exception:
+                log.warning("answer roster: intro did not decode - "
+                            "stopping the loop")
+                break
+            if not fresh:
+                break  # cursor wrapped with nothing new: roster done
+            seen |= fresh
+            self._tap(pkt, would_tx=False, tx_ok=False,
+                      in_reply_to=self.feed_tap.current_req_id)
+        log.info("ANSWER ROSTER via TCP DOOR: %d/%d node(s)",
+                 len(seen), len(known))
 
     def build_pulse_now(self) -> OutPacket:  # noqa: F821 (feedbuilder)
         """A PULSE with the service's HONEST uptime (not the builder's

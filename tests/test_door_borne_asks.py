@@ -193,3 +193,80 @@ def test_door_ask_dedupe_still_applies():
         assert len(tap.served) == first, \
             "the same ask answered twice would be a lie, not generosity"
     asyncio.run(run())
+
+
+def _seed_roster(svc, count: int) -> set:
+    """`count` positioned+named nodes around the centre; returns the
+    prefixes the store should know afterwards. Nodes enter the node
+    table via ADVERTS (add_position) - the feedbuilder tests' way."""
+    now = time.time()
+    for i in range(count):
+        prefix = 0x40 + i  # INTRO prefixes are 1 byte on the wire
+        lat = 37.0 + (i % 20) * 0.002
+        lon = -122.0 + (i // 20) * 0.002
+        svc.store.add(type("O", (), {
+            "recv_ts": now, "origin_ts": now - 1.0,
+            "prefix": prefix, "lat": lat, "lon": lon,
+            "path_prefixes": [], "channel_name": None,
+            "delay_s": 1.0})(), now=now)
+        svc.store.add_position(prefix, lat, lon, name=f"node-{i}",
+                               now=now)
+    return set(svc.store.known_nodes())
+
+
+def test_whole_area_door_answer_carries_the_full_roster():
+    """MARKER-0 LAW (VECTORED-SYNC-DESIGN: "marker 0 gets the full
+    roster"), written before the code (Brett, 2026-09-25). The bug
+    this pins: the answer packed ONE ~4-node intro, so a phone that
+    missed the connect burst filled at four nodes per refresh press -
+    Brett's "press it a bunch of times". The door answer must loop
+    until every node the ask owes has gone out - and still never
+    touch the radio."""
+    async def run():
+        svc = make_service()
+        radio = FakeRadio()
+        svc.client = radio
+        tap = FakeTap()
+        svc.feed_tap = tap
+        known = _seed_roster(svc, 40)
+        assert len(known) >= 40, "the store must hold the roster"
+        req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION,
+                               target=codec.REFRESH_WHOLE_AREA, nonce=5,
+                               span_km=40, sync_marker=0)
+        await svc.on_packet(req, "door", via_door=True)
+        seen = set()
+        for data_type, payload in tap.served:
+            if data_type == codec.TYPE_INTRO:
+                seen |= {e.prefix
+                         for e in codec.decode_any(payload).entries}
+        missing = known - seen
+        assert not missing, \
+            f"the answer missed {len(missing)} node(s): " \
+            f"{sorted(missing)[:5]}..."
+        assert radio.sent == [], \
+            "the roster rides the wire only - never the radio"
+    asyncio.run(run())
+
+
+def test_radio_whole_area_answer_stays_lean():
+    """THE OTHER SIDE OF THE SCOPE: the ON-AIR answer does NOT get the
+    roster loop (the 1% duty law protects the air; the cadence pushes
+    batches one at a time, as always). Door-only generosity."""
+    async def run():
+        svc = make_service(burst_gap_seconds=0.0)
+        radio = FakeRadio()
+        svc.client = radio
+        tap = FakeTap()
+        svc.feed_tap = tap
+        _seed_roster(svc, 40)
+        req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION,
+                               target=codec.REFRESH_WHOLE_AREA, nonce=6,
+                               span_km=40, sync_marker=0)
+        await svc.on_packet(req, "aabbccddeeff")  # NOT via_door
+        assert radio.sent, "the air answer must actually go out"
+        intros = [p for t, p in radio.sent
+                  if t == codec.TYPE_INTRO]
+        assert len(intros) <= 2, \
+            f"the air answer grew to {len(intros)} intro packets - " \
+            "the roster loop must stay on the door"
+    asyncio.run(run())
