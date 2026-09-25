@@ -313,9 +313,13 @@ class ScopeService:
                  req.sync_marker, len(packets),
                  " (door-borne, wire only)" if via_door else "")
         if via_door:
-            # THE DOOR'S ANSWER: wire only. No radio TX, no airtime
-            # budget, no artificial gaps - the FeedTap serves every
-            # packet straight to the connected clients.
+            # THE DOOR'S ANSWER (Brett, 2026-09-24): wire only, and
+            # the log SAYS so - burst size and pipe, no guessing.
+            log.info("SENDING BURST via TCP DOOR: %d packet(s) "
+                     "(%s) -> connected client(s)", len(packets),
+                     ", ".join(
+                         f"{out.reason}:0x{out.data_type:04x}"
+                         for out in packets))
             for out in packets:
                 if self.feed_tap is not None:
                     self._tap(out, would_tx=False, tx_ok=False,
@@ -379,8 +383,12 @@ class ScopeService:
                  " (door-borne, wire only)" if via_door else "",
                  int(time.time() - self.started_at) // 60)
         if via_door:
-            # THE DOOR'S CONNECT BURST: straight to the wire tap -
-            # every packet, zero radio attempts, zero gaps.
+            # THE DOOR'S CONNECT BURST (Brett, 2026-09-24): wire only,
+            # and the log says so - burst size and contents.
+            log.info("SENDING CONNECT BURST via TCP DOOR: %d packet(s) "
+                     "(%s) -> connected client(s)", len(burst),
+                     ", ".join(f"{out.reason}:0x{out.data_type:04x}"
+                               for out in burst))
             for out in burst:
                 if self.feed_tap is not None:
                     self._tap(out, would_tx=False, tx_ok=False,
@@ -424,6 +432,9 @@ class ScopeService:
                               in_reply_to=None)
             else:
                 await self._send_burst([pkt], gap=0.0)
+                if via_door:
+                    log.info("SENDING ROSTER BATCH via TCP DOOR: "
+                             "intro -> connected client(s)")
             if not fresh:
                 break        # this batch added nothing new - roster done
             seen.update(e.prefix for e in fresh)
