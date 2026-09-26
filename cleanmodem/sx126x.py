@@ -84,9 +84,16 @@ IRQ_SYNCWORD_VALID = 0x0008
 IRQ_HEADER_VALID = 0x0010
 IRQ_HEADER_ERR = 0x0020
 IRQ_CRC_ERR = 0x0040
-IRQ_CAD_DONE = 0x0100
-IRQ_CAD_DETECTED = 0x0200
-IRQ_TIMEOUT = 0x0200              # SetRx timeout shares bit 9
+# v0.0.054 (2026-09-26): the CAD pair was MISTRANSLATED - DONE sat
+# on 0x0100 (the DETECTED bit) and DETECTED on 0x0200 (the TIMEOUT
+# bit), so a QUIET channel never matched "finished" and every probe
+# died with 'CAD timed out' (hilltop 2026-09-25/26). Numbers verified
+# against the reference driver: openhop_core
+# src/pymc_core/hardware/lora/LoRaRF/SX126x.py (IRQ_CAD_DONE =
+# 0x0080, IRQ_CAD_DETECTED = 0x0100, IRQ_TIMEOUT = 0x0200).
+IRQ_CAD_DONE = 0x0080
+IRQ_CAD_DETECTED = 0x0100
+IRQ_TIMEOUT = 0x0200
 IRQ_ALL = 0x03FF
 
 # LoRa packet type
