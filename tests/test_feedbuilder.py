@@ -62,8 +62,12 @@ def test_sized_whole_area_trims_layout_and_sections():
     intro = codec.decode_intro(
         next(p for p in pkts if p.data_type == codec.TYPE_INTRO).payload[3:],
         center_lat=layout.center_lat, center_lon=layout.center_lon,
-        span_m=layout.span_m)  # decode against the WINDOW layout
-    assert intro.span_m == 20000           # intro offsets use the window
+        span_m=layout.span_m)  # the fallback field: unused since v1.5
+    # THE RULER (Brett's fix, 2026-09-26): the offsets are measured
+    # against a ruler that reaches every node (never smaller than the
+    # home box) - the window no longer sets the offset scale, so no
+    # position is ever pinned at a window edge.
+    assert intro.span_m >= 60000
     # last packet is the live PULSE (service appends it; builder alone
     # does not - the service layer owns that rule)
     assert codec.TYPE_PULSE not in kinds

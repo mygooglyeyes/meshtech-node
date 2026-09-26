@@ -80,7 +80,10 @@ class PeerTable:
 
 
 def _geometry_of(layout: codec.Layout) -> GridGeometry:
+    # rows=0 (a legacy LAYOUT) makes the geometry square again
+    # (grid x grid) - GridGeometry's own rule.
     return GridGeometry(grid=layout.grid,
+                        rows=layout.rows,
                         center_lat=layout.center_lat,
                         center_lon=layout.center_lon,
                         span_m=int(layout.span_m))

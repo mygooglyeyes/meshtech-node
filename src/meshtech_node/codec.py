@@ -40,6 +40,7 @@ from typing import List, Optional, Tuple
 PROTO_VERSION = 0x05          # default for UNCHANGED shapes
 PROTO_VERSION_REFRESH = 0x06  # REFRESH_REQ (sync_marker added)
 PROTO_VERSION_GONE = 0x06     # GONE (new packet)
+PROTO_VERSION_INTRO = 0x06    # INTRO (the ruler: span field 3 LE bytes)
 
 # Type GONE (0x5312): vectored-sync deletion notice. Body: seq(2)+
 # origin(2) header then count(1) + count x prefix(1). Up to 8.
@@ -379,8 +380,16 @@ def _position_deltas(intro: Intro, lat: float, lon: float) -> Tuple[int, int]:
     span_deg = intro.span_m / 111320.0
     dlat = round((lat - intro.center_lat) / span_deg * 32767)
     dlon = round((lon - intro.center_lon) / span_deg * 32767)
-    dlat = max(-32767, min(32767, dlat))
-    dlon = max(-32767, min(32767, dlon))
+    # NEVER PIN (Brett's hard rule 2, 2026-09-26): a delta past the
+    # end of the ruler used to be clamped to its end - a FABRICATED
+    # position (the pile-of-dots ring the 60 km view exposed). A
+    # ruler that cannot reach a node is a builder bug, and the honest
+    # answer is the loud one: refuse to mint the packet at all.
+    if not -32767 <= dlat <= 32767 or not -32767 <= dlon <= 32767:
+        raise CodecError(
+            f"position ({lat}, {lon}) falls outside the intro ruler "
+            f"({intro.span_m} m) - widen the ruler; "
+            f"never pin a fake position")
     return dlat, dlon
 
 
@@ -394,10 +403,14 @@ def encode_intro(i: Intro) -> bytes:
     if len(i.entries) > 255:
         raise CodecError("too many intro entries")
     span_wire = round(i.span_m)
-    if not 0 < span_wire <= 0xFFFF:
+    if not 0 < span_wire <= 0xFFFFFF:
         raise CodecError(f"intro span_m out of wire range: {i.span_m}")
-    body = pack_header(i.seq, i.origin)
-    body += struct.pack("<H", span_wire)
+    body = pack_header(i.seq, i.origin, version=PROTO_VERSION_INTRO)
+    # v1.6 (Brett, 2026-09-26): the span field IS THE RULER and grew
+    # to 3 LE bytes - the old 2-byte meters field capped at 65.5 km
+    # and pinned every farther node at its end. Old decoders refuse
+    # v1.6 packets loudly (their version check), never silently wrong.
+    body += span_wire.to_bytes(3, "little")
     body += struct.pack("<B", len(i.entries))
     for entry in i.entries:
         name_bytes = (entry.name or "").encode("utf-8")[:MAX_NAME]
@@ -416,27 +429,32 @@ def decode_intro(payload: bytes, *, center_lat: float = 0.0,
                  center_lon: float = 0.0,
                  span_m: Optional[float] = None) -> Intro:
     """Decode INTRO. Positions are reconstructed from deltas against
-    the span THE PACKET CARRIES (v1.5) and the LAYOUT center the
+    the span THE PACKET CARRIES (since v1.5) and the LAYOUT center the
     client already has (pass it here).
 
-    span_m: a caller's LAYOUT span, used ONLY as a cross-check - if
-    the packet's span disagrees, raise (the honest loud error beats a
-    silently wrong decode). Leave it None (the default) to TRUST the
-    packet - no longer a guess, because the packet now carries the
-    scale its deltas were measured at."""
+    span_m: a fallback ONLY for pre-v1.5 packets (nothing on the
+    wire to trust). v1.6 (2026-09-26): the span is THE RULER - the
+    scale measured to REACH every node in the packet (3 LE meters),
+    so no position is ever pinned at a window edge and none is ever
+    dropped. The old span cross-check is gone: the packet's span is
+    the truth, and comparing a ruler to a LAYOUT window is noise."""
     header, off = unpack_header(payload)
-    if header.version >= 0x05:
-        # v1.5: the packet carries its OWN span (2 LE meters).
+    if header.version >= 0x06:
+        # v1.6: the ruler, 3 LE meters.
+        if len(payload) < off + 3:
+            raise CodecError("INTRO too short for span field")
+        wire_span = int.from_bytes(payload[off:off + 3], "little")
+        off += 3
+        if wire_span <= 0:
+            raise CodecError(f"INTRO span must be positive, got {wire_span}")
+    elif header.version >= 0x05:
+        # v1.5: 2 LE meters (packets still in flight from an old host).
         if len(payload) < off + 2:
             raise CodecError("INTRO too short for span field")
         wire_span = struct.unpack_from("<H", payload, off)[0]
         off += 2
         if wire_span <= 0:
             raise CodecError(f"INTRO span must be positive, got {wire_span}")
-        if span_m is not None and round(span_m) != wire_span:
-            raise CodecError(
-                f"INTRO span mismatch: packet says {wire_span} m, "
-                f"caller assumed {round(span_m)} m")
     else:
         # v1.0-1.4 packets carry NO span (the old guess-field): fall
         # back to the caller's span, or the era's 40 km assumption -
@@ -481,22 +499,32 @@ def decode_intro(payload: bytes, *, center_lat: float = 0.0,
 
 # --------------------------------------------------------------------------
 # LAYOUT (0x5305)
+#
+# v1.6 (Brett, 2026-09-25): the section grid is no longer square -
+# `grid` is the ACROSS count and a `rows` byte (down count) rides at
+# the END of the body. A packet WITHOUT it is legacy square
+# (grid x grid). Old decoders skip it happily (they never looked at
+# trailing bytes), so one wire serves both.
 # --------------------------------------------------------------------------
 
 @dataclass
 class Layout:
     seq: int
-    grid: int
+    grid: int            # sections ACROSS (columns)
     center_lat: float
     center_lon: float
     span_m: int
     origin: int = 0
     name: str = ""
+    rows: int = 0        # sections DOWN; 0 = legacy square (grid x grid)
 
 
 def encode_layout(l: Layout) -> bytes:
     if not 2 <= l.grid <= 5:
         raise CodecError(f"grid out of range: {l.grid}")
+    rows = l.rows if l.rows > 0 else l.grid
+    if not 2 <= rows <= 5:
+        raise CodecError(f"rows out of range: {rows}")
     name_bytes = l.name.encode("utf-8")[:MAX_NAME]
     body = pack_header(l.seq, l.origin)
     body += struct.pack("<B", l.grid)
@@ -505,6 +533,7 @@ def encode_layout(l: Layout) -> bytes:
     body += struct.pack("<H", _u16(l.span_m, "span_m"))
     body += struct.pack("<B", len(name_bytes))
     body += name_bytes
+    body += struct.pack("<B", rows)  # v1.6: AFTER the name (legacy-safe)
     return data_type_bytes(TYPE_LAYOUT, body)
 
 
@@ -525,9 +554,16 @@ def decode_layout(payload: bytes) -> Layout:
     if len(payload) < off + name_len:
         raise CodecError("LAYOUT name truncated")
     name = payload[off:off + name_len].decode("utf-8", "replace")
+    off += name_len
+    # v1.6 trailing rows byte; absent = legacy square (grid x grid).
+    rows = grid
+    if len(payload) > off:
+        rows = payload[off]
+        if not 2 <= rows <= 5:
+            raise CodecError(f"LAYOUT rows out of range: {rows}")
     return Layout(seq=header.seq, grid=grid, center_lat=lat_e6 / 1e6,
                   center_lon=lon_e6 / 1e6, span_m=span_m,
-                  origin=header.origin, name=name)
+                  origin=header.origin, name=name, rows=rows)
 
 
 # --------------------------------------------------------------------------

@@ -256,6 +256,7 @@ class FeedBuilder:
         layout = codec.Layout(
             seq=self._next_seq(),
             grid=area.grid,
+            rows=area.rows,
             center_lat=area.center_lat,
             center_lon=area.center_lon,
             span_m=int(area.span_km * 1000.0),
@@ -313,7 +314,7 @@ class FeedBuilder:
         """One INTRO batch of <= 100 body-bytes, positioned nodes first."""
         now = time.time() if now is None else now
         area = self.settings.area
-        span_m = area.span_km * 1000.0
+        span_m = self._ruler_m()
         intro = codec.Intro(seq=self._next_seq(), origin=self.origin,
                             center_lat=area.center_lat,
                             center_lon=area.center_lon, span_m=span_m)
@@ -398,6 +399,7 @@ class FeedBuilder:
         snapped = min(snapped, home_km)
         sized = GridGeometry(
             grid=self.geometry.grid,
+            rows=self.geometry.rows,
             center_lat=self.geometry.center_lat,
             center_lon=self.geometry.center_lon,
             span_m=int(snapped * 1000.0),
@@ -493,6 +495,7 @@ class FeedBuilder:
         layout = codec.Layout(
             seq=self._next_seq(),
             grid=sized.grid,
+            rows=sized.rows,
             center_lat=sized.center_lat,
             center_lon=sized.center_lon,
             span_m=int(sized.span_m),
@@ -501,6 +504,26 @@ class FeedBuilder:
         )
         return OutPacket(codec.TYPE_LAYOUT, codec.encode_layout(layout),
                          "layout")
+
+    def _ruler_m(self) -> int:
+        """THE BIG RULER (Brett's fix, 2026-09-26): one ruler that
+        REACHES every node the box has ever heard from the area
+        centre - its size travels with the data (wire v1.6), so the
+        client rebuilds every position TRUE at any zoom. Nothing is
+        pinned at a window edge (the pile-of-dots bug); nothing is
+        dropped. Whole km, never smaller than the home box."""
+        area = self.settings.area
+        needed_deg = 0.0
+        for prefix in self.store.known_nodes():
+            info = self.store.node_info(prefix) or {}
+            lat, lon = info.get("lat"), info.get("lon")
+            if lat is None or lon is None:
+                continue
+            needed_deg = max(needed_deg,
+                             abs(float(lat) - area.center_lat),
+                             abs(float(lon) - area.center_lon))
+        ruler = ((int(needed_deg * 111320.0) // 1000) + 1) * 1000
+        return max(ruler, int(area.span_km * 1000.0))
 
     def _build_intro_for(self, sized: GridGeometry, *,
                          now: float,
@@ -518,7 +541,7 @@ class FeedBuilder:
         intro = codec.Intro(seq=self._next_seq(), origin=self.origin,
                             center_lat=sized.center_lat,
                             center_lon=sized.center_lon,
-                            span_m=sized.span_m)
+                            span_m=self._ruler_m())
         entries: List[codec.IntroEntry] = []
         body_len = 1
         known = sorted(self.store.known_nodes())

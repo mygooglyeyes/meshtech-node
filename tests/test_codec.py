@@ -105,6 +105,26 @@ def test_layout_roundtrip():
     assert out.name == "Test area"
 
 
+def test_layout_rows_byte_v16_and_optional():
+    """v1.6 (Brett, 2026-09-25): the rows byte rides at the END of
+    the LAYOUT body. A packet WITHOUT it is the old SQUARE wire
+    (grid x grid) - one wire serves both."""
+    l = codec.Layout(seq=3, grid=3, rows=4, center_lat=37.4419,
+                     center_lon=-122.1430, span_m=60000, name="Test area")
+    raw = codec.encode_layout(l)
+    body = raw[3:]
+    out = codec.decode_layout(body)
+    assert (out.grid, out.rows) == (3, 4)
+    # Legacy packet: no trailing rows byte -> square again.
+    out2 = codec.decode_layout(body[:-1])
+    assert (out2.grid, out2.rows) == (3, 3)
+    # And an explicit square round-trips as itself.
+    l3 = codec.Layout(seq=3, grid=3, rows=3, center_lat=37.4419,
+                      center_lon=-122.1430, span_m=60000, name="Test area")
+    out3 = codec.decode_layout(codec.encode_layout(l3)[3:])
+    assert (out3.grid, out3.rows) == (3, 3)
+
+
 # ---------------------------------------------------------------- SNAP
 
 def test_snap_roundtrip():
@@ -211,15 +231,37 @@ def test_payload_budget_respected():
         active_total=0xFFFF, origin=0xB17E, section_counts=[9] * 25))
     assert len(pulse) <= codec.TARGET_PAYLOAD
     intro = codec.encode_intro(codec.Intro(
-        seq=0, origin=0xB17E,
+        seq=0, origin=0xB17E, span_m=200000.0,  # the ruler must REACH
         entries=[codec.IntroEntry(prefix=i, name="N" * 20,
                                   lat=1.0, lon=1.0)
-                 for i in range(4)]))
+                 for i in range(4)]))  # the entries (never pin, rule 2)
     assert len(intro) <= codec.TARGET_PAYLOAD
     route = codec.encode_route(codec.Route(
         seq=0, section_id=1, route_id=0, packet_count=0, delay_med_s=0,
         last_heard_min=0, origin=0xB17E, prefixes=list(range(8))))
     assert len(route) <= codec.TARGET_PAYLOAD
+
+
+def test_far_node_travels_true_no_pinned_positions():
+    """Brett's pile-of-dots fix (2026-09-26): a node far past the
+    asked window travels TRUE - the ruler reaches it, nothing is
+    pinned at a window edge (hard rule 2), nothing is dropped."""
+    i = codec.Intro(seq=1, center_lat=37.0, center_lon=-122.0,
+                    span_m=150000.0,  # the big ruler, 150 km
+                    entries=[codec.IntroEntry(prefix=1, name="Far",
+                                              lat=37.8, lon=-122.0)])
+    out = codec.decode_intro(codec.encode_intro(i)[3:],
+                             center_lat=37.0, center_lon=-122.0)
+    e = out.entries[0]
+    assert abs(e.lat - 37.8) < 0.001      # its TRUE latitude (~90 km out)
+    assert abs(e.lon - -122.0) < 0.001
+    # And a ruler that CANNOT reach a node refuses to mint the packet
+    # loudly - it never clamps to a fake position.
+    with pytest.raises(codec.CodecError):
+        codec.encode_intro(codec.Intro(
+            seq=1, center_lat=37.0, center_lon=-122.0, span_m=40000.0,
+            entries=[codec.IntroEntry(prefix=1, name="Far",
+                                      lat=37.8, lon=-122.0)]))
 
 
 def test_peek_and_decode_any():

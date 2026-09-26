@@ -91,6 +91,7 @@ class ScopeService:
         self.store = RollingStore(window_seconds=3600.0)
         self.geometry = GridGeometry(
             grid=settings.area.grid,
+            rows=settings.area.rows,
             center_lat=settings.area.center_lat,
             center_lon=settings.area.center_lon,
             span_m=int(settings.area.span_km * 1000.0),
@@ -872,7 +873,7 @@ class ScopeService:
                     sect = self.builder.build_sect_sum(self.builder._background_section)
                     self.builder._background_section = \
                         (self.builder._background_section %
-                         self.geometry.section_count) + 1  # rotate 1..9, never 0
+                         self.geometry.section_count) + 1  # rotate 1..N, never 0
                     await self._send_burst([pulse, sect], gap=feed.burst_gap_seconds)
                     self.builder._last_pulse = now
             except Exception:
@@ -894,7 +895,7 @@ class ScopeService:
                  "budget %d pkt/h @ %.1f%% duty",
                  self.settings.channel.name, self.origin,
                  self.settings.area.grid,
-                 self.settings.area.grid,
+                 self.settings.area.rows,
                  self.settings.feed.pulse_interval_seconds,
                  self.settings.feed.layout_beacon_seconds,
                  self.settings.feed.multi_host,

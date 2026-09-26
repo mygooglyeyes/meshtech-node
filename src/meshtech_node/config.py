@@ -55,7 +55,18 @@ class AreaCfg:
     center_lat: float = 38.1074
     center_lon: float = -122.5697
     span_km: float = 60.0
+    # SECTION SHAPE (Brett, 2026-09-25): grid ACROSS x rows DOWN -
+    # the phone map draws 3x4 squares numbered 1 (upper left) to 12
+    # (lower right), and the server's sections are the same 3x4.
+    # rows=0 keeps the pre-3x4 meaning: a square grid x grid (every
+    # old config and test builds that shape); the config PARSER is
+    # what turns an absent shape into the phone's 3x4 default.
     grid: int = 3
+    rows: int = 0
+
+    def __post_init__(self) -> None:
+        if self.rows <= 0:
+            self.rows = self.grid
 
 
 @dataclass
@@ -232,11 +243,35 @@ def load(config_path: str) -> Settings:
     )
 
     area_raw = _dict(raw, "area")
-    grid = _int(area_raw, "grid", 3, errors, "area.grid")
-    if grid < 2 or grid > 5:
-        errors.append("area.grid must be between 2 and 5 (a grid x grid "
-                      "tiling of the area).")
-        grid = 3
+    # SECTION SHAPE (Brett, 2026-09-25): the area is cut cols across
+    # x rows down - 3x4 = 12 sections numbered 1 (upper left) to 12
+    # (lower right), the same squares the phone map draws. The OLD
+    # area.grid key meant a SQUARE grid x grid and is still honored
+    # as exactly that (with a warning); with no shape in the config
+    # at all, the default is the phone shape: 3 across x 4 down.
+    if "grid" in area_raw and "cols" not in area_raw \
+            and "rows" not in area_raw:
+        grid = _int(area_raw, "grid", 3, errors, "area.grid")
+        if grid < 2 or grid > 5:
+            errors.append("area.grid must be between 2 and 5 (a grid x grid "
+                          "tiling of the area).")
+            grid = 3
+        cols, rows = grid, grid
+        warnings.append(
+            "area.grid is the old SQUARE shape - the section grid is now "
+            "cols x rows (the phone map is 3 across x 4 down; write "
+            "\"cols\": 3, \"rows\": 4 in the area block).")
+    else:
+        cols = _int(area_raw, "cols", 3, errors, "area.cols")
+        if cols < 2 or cols > 5:
+            errors.append("area.cols must be between 2 and 5 (the section "
+                          "grid is cols across x rows down).")
+            cols = 3
+        rows = _int(area_raw, "rows", 4, errors, "area.rows")
+        if rows < 2 or rows > 5:
+            errors.append("area.rows must be between 2 and 5 (the section "
+                          "grid is cols across x rows down).")
+            rows = 4
     # MAP SIZE - HOME AREA IS 60 (Brett's design, 2026-09-23,
     # MAP-SIZE-DESIGN.md, verified): the SERVER always watches the
     # full 60x60 km home box; the 20/40/60 choice belongs to the
@@ -258,7 +293,8 @@ def load(config_path: str) -> Settings:
         center_lat=_float(area_raw, "center_lat", 0.0, errors, "area.center_lat"),
         center_lon=_float(area_raw, "center_lon", 0.0, errors, "area.center_lon"),
         span_km=span_km,
-        grid=grid,
+        grid=cols,
+        rows=rows,
     )
     if not (-90.0 <= area.center_lat <= 90.0 and -180.0 <= area.center_lon <= 180.0):
         errors.append("area.center_lat / area.center_lon must be valid "

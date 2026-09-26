@@ -27,6 +27,35 @@ def test_grid_bounds(tmp_path):
     assert "area.grid" in str(exc.value)
 
 
+def test_default_shape_is_the_phone_grid(tmp_path):
+    """No shape in the config -> the phone's 3x4 (Brett, 2026-09-25):
+    3 across x 4 down = 12 sections, 1 upper left .. 12 lower right."""
+    s = load(_write(tmp_path, {}))
+    assert (s.area.grid, s.area.rows) == (3, 4)
+
+
+def test_cols_rows_keys(tmp_path):
+    """The new shape keys say it plainly: cols across, rows down."""
+    s = load(_write(tmp_path, {"area": {"cols": 4, "rows": 3}}))
+    assert (s.area.grid, s.area.rows) == (4, 3)
+    assert s.warnings == []
+
+
+def test_shape_bounds(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"area": {"cols": 9, "rows": 4}}))
+    assert "area.cols" in str(exc.value)
+
+
+def test_legacy_grid_is_square_with_warning(tmp_path):
+    """The old area.grid meant SQUARE - honored as exactly that, with
+    a warning pointing at cols/rows (an old install must still boot
+    true to what it always drew)."""
+    s = load(_write(tmp_path, {"area": {"grid": 3}}))
+    assert (s.area.grid, s.area.rows) == (3, 3)
+    assert any("area.grid" in w for w in s.warnings)
+
+
 def test_span_snap_covers_any_value(tmp_path):
     """No span value can break boot: everything snaps into the menu
     (900 km -> 60, the largest honest choice), with a warning."""
