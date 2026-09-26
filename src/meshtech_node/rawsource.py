@@ -63,6 +63,7 @@ class SourceStats:
     undecodable: int = 0                 # group packets with no valid channel
     ignored_type: int = 0
     non_scope: int = 0                   # valid #scope HMAC, other app's data
+    grp_text: int = 0                    # group TEXT on our key - never scope
 
 
 class ReplayTransport:
@@ -349,6 +350,17 @@ class RawPacketSource:
             return self._header_observation(rx, frame)
         channel, _plaintext, origin_ts = decoded
         self.stats.decoded += 1
+        if frame.payload_type == PAYLOAD_TYPE_GRP_TXT:
+            # v0.0.051 (the "33 unexplained decodes" hunt): chat on a
+            # key we hold used to count as a bare 'decoded' and then
+            # vanish - GRP_TEXT is never offered to the scope handler
+            # (GRP_DATA only). Anyone whose radio has a default
+            # #scope channel (secret = sha256 of the name) can talk
+            # here, so this tenant is now counted out loud.
+            self.stats.grp_text += 1
+            log.debug("GRP_TEXT decrypted on channel %s (%dB) - "
+                      "chat/other app, never offered to the scope "
+                      "handler", channel.name, len(frame.payload))
         if frame.payload_type == PAYLOAD_TYPE_GRP_DATA:
             self._emit_scope(decoded, frame, rx)
         return Observation(
@@ -409,7 +421,7 @@ class RawPacketSource:
         return (f"heard {s.received}: decoded {s.decoded}, dup {s.duplicates}, "
                 f"malformed {s.malformed}, corrupt {s.corrupt}, "
                 f"undecodable {s.undecodable}, ignored {s.ignored_type}, "
-                f"non-scope {s.non_scope}")
+                f"non-scope {s.non_scope}, chat {s.grp_text}")
 
 
 def _log_task_death(task: "asyncio.Task") -> None:

@@ -78,6 +78,35 @@ def test_refresh_request_full_path():
     asyncio.run(run())
 
 
+def test_own_layout_echo_counted_and_spoken_at_debug(caplog):
+    """v0.0.051 (the "33 unexplained decodes" hunt): our own cadence
+    layout coming back through a companion re-flood (or an anonymous
+    one) dropped in silence - counted + DEBUG now, plus a stop line
+    stating both totals."""
+    import logging as _logging
+    async def run():
+        svc = make_service()
+        mine = codec.Layout(seq=1, grid=3, center_lat=37.0,
+                            center_lon=-122.0, span_m=40000,
+                            origin=svc.origin)
+        theirs = codec.Layout(seq=2, grid=3, center_lat=38.0,
+                              center_lon=-121.0, span_m=40000,
+                              origin=0xBEEF)
+        anon = codec.Layout(seq=3, grid=3, center_lat=37.0,
+                            center_lon=-122.0, span_m=40000,
+                            origin=0)
+        with caplog.at_level(_logging.DEBUG,
+                             logger="meshtech-node.service"):
+            await svc.on_packet(mine, "unknown")
+            await svc.on_packet(theirs, "unknown")
+            await svc.on_packet(anon, "unknown")
+        assert svc._layout_echo == 2      # own echo + anonymous
+        assert svc._peer_layouts == 1     # the real peer observed
+        assert any("own echo or anonymous" in r.message
+                   for r in caplog.records)
+    asyncio.run(run())
+
+
 def test_rate_limited_client_gets_nothing():
     async def run():
         svc = make_service(refresh_cooldown_seconds=3600.0)

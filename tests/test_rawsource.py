@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import pytest  # noqa: E402
 
 from meshtech_node.packets import (  # noqa: E402
-    PAYLOAD_TYPE_GRP_DATA, FloodDedupe,
+    PAYLOAD_TYPE_GRP_DATA, PAYLOAD_TYPE_GRP_TXT, FloodDedupe,
 )
 from meshtech_node.rawsource import (  # noqa: E402
     RawPacketSource, ReplayTransport, RxPacket,
@@ -248,6 +248,24 @@ def test_silent_drop_points_speak_at_debug(caplog):
     assert any("not decryptable" in m for m in msgs)
     assert any("NO on_scope" in m for m in msgs)
     assert src.stats.undecodable == 1    # counters stay honest
+
+
+def test_group_text_on_our_key_counted_and_spoken(caplog):
+    """v0.0.051 (the "33 unexplained decodes" hunt): GRP_TEXT that
+    decrypts on our channel used to count as a bare 'decoded' and
+    then vanish - never offered to the scope handler. Counted,
+    DEBUG-logged, and named in the stop stats, so the channel's
+    other tenants are never invisible again."""
+    import logging as _logging
+    src = _source([])
+    with caplog.at_level(_logging.DEBUG, logger="meshtech-node.rawsource"):
+        obs = src.handle_packet(
+            RxPacket(data=_frame(PAYLOAD_TYPE_GRP_TXT, 0,
+                                 _scope_group_payload())))
+    assert obs is not None
+    assert src.stats.grp_text == 1
+    assert any("GRP_TEXT decrypted" in r.message for r in caplog.records)
+    assert "chat 1" in src.stats_line()
 
 
 def test_ignored_types_counted():

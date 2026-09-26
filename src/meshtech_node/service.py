@@ -160,6 +160,13 @@ class ScopeService:
         # client cannot be followed across requests. A stale deadline
         # stops repeated orphaned uplinks from re-opening the window.
         self._uplink_open_until = 0.0
+        # v0.0.051 (the "33 unexplained decodes" hunt): the other
+        # silent class counted out loud - our own cadence layout
+        # coming back through a companion re-flood (or an anonymous
+        # layout) dropped here without a word at INFO; the stop line
+        # states both totals so a restart answers at INFO.
+        self._peer_layouts = 0
+        self._layout_echo = 0
 
     def builder_section_of(self, obs) -> int:
         """The square an observation was heard in (the builder's own
@@ -209,7 +216,15 @@ class ScopeService:
 
     def _on_peer_layout(self, layout: codec.Layout) -> None:
         if layout.origin == 0 or layout.origin == self.origin:
-            return  # anonymous or our own packet echoed back
+            # anonymous or our own packet echoed back - v0.0.051:
+            # this silent return hid one of the "33 unexplained
+            # decodes", so it is counted and said at DEBUG now.
+            self._layout_echo += 1
+            log.debug("Layout from origin %04x dropped - own echo or "
+                      "anonymous (%d so far)", layout.origin,
+                      self._layout_echo)
+            return
+        self._peer_layouts += 1
         peer = self.peers.observe_layout(layout)
         log.info("Peer %04x (%s): %dx%d grid, span %.0f km, %d peer(s) known",
                  peer.origin, peer.name or "?", layout.grid, layout.grid,
@@ -888,6 +903,12 @@ class ScopeService:
         try:
             await self._stop.wait()
         finally:
+            # v0.0.051: the silent classes stated at every stop - the
+            # next restart answers "what else is talking on the
+            # channel" without a DEBUG window.
+            log.info("Layouts heard: %d peer(s) observed, %d own/"
+                     "anonymous echo(s) dropped", self._peer_layouts,
+                     self._layout_echo)
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
