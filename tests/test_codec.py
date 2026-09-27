@@ -279,6 +279,29 @@ def test_unknown_type_raises():
         codec.decode_any(b"\x99\x53\x03\x01\x00\x00")
 
 
+# ---------------------------------------------------------------- HEARTBEAT
+
+def test_heartbeat_roundtrip():
+    """The app's keep-alive: header only, 8 plaintext bytes total."""
+    h = codec.Heartbeat(seq=42, origin=0xB17E)
+    raw = codec.encode_heartbeat(h)
+    assert len(raw) == 8          # type(2)+len(1)+ver(1)+seq(2)+origin(2)
+    out = codec.decode_heartbeat(raw[3:])
+    assert out.seq == 42
+    assert out.origin == 0xB17E
+    # decode_any routes it too (what RawPacketSource calls)
+    out2 = codec.decode_any(raw)
+    assert isinstance(out2, codec.Heartbeat)
+    assert out2.seq == 42
+
+
+def test_heartbeat_truncations_raise():
+    raw = codec.encode_heartbeat(codec.Heartbeat(seq=1, origin=2))
+    for cut in range(0, len(raw) - 3):
+        with pytest.raises(codec.CodecError):
+            codec.decode_heartbeat(raw[3:cut])
+
+
 def test_truncated_payloads_raise_not_crash():
     good = codec.encode_pulse(codec.Pulse(seq=1, uptime_min=2, rx_per_hour=3,
                                           feed_airtime_s_per_h=4,

@@ -18,7 +18,7 @@ import logging
 import random
 import secrets
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 from . import codec
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
@@ -157,6 +157,18 @@ class ScopeService:
         # req-id stack while a wire refresh is being dispatched.
         self.feed_tap = None
         self.bench_no_radio = False
+        # AUDIENCE GATE (Brett's airtime rule, 2026-09-26): the node's
+        # OWN cadence (LAYOUT/PULSE/SECT_SUM/beacon) flies only while a
+        # phone app is proven to be listening - a HEARTBEAT (0x5313) or
+        # an over-the-air REFRESH_REQ inside the window. The TCP door
+        # NEVER counts (it is not the mesh). Two timestamps do the
+        # work; the demo generator (use_demo) ignores the gate so the
+        # demo map never dies on a quiet bench.
+        self.AUDIENCE_WINDOW_S = 300.0          # 5 min (Brett's 2/5 call)
+        self._last_air_client_s: Optional[float] = None
+        self._audience_was = False
+        self._heartbeat_count = 0
+        self._unknown_heartbeat_count = 0
         # REFRESH_REQ uplinks are anonymous: without a key prefix the
         # client cannot be followed across requests. A stale deadline
         # stops repeated orphaned uplinks from re-opening the window.
@@ -202,8 +214,26 @@ class ScopeService:
             if isinstance(obj, codec.Layout):
                 self._on_peer_layout(obj)
             elif isinstance(obj, codec.RefreshReq):
+                # An over-the-air refresh ask is ALSO an audience sign:
+                # a live app is listening (the door branch never gets
+                # here - door asks answer through the door only).
+                if not via_door:
+                    self._note_air_client(sender_prefix, "refresh ask")
                 await self._handle_refresh(obj, sender_prefix,
                                            via_door=via_door)
+            elif isinstance(obj, codec.Heartbeat):
+                # AUDIENCE GATE (Brett's 2/5): the app's tiny keep-alive.
+                # Listens respects the same allow-list as refreshes (a
+                # stranger's heartbeats must not re-open the cadence for
+                # the whole mesh). The door never sends one.
+                allowed, _why, _retry = self.rate.verdict(sender_prefix)
+                if allowed:
+                    self._heartbeat_count += 1
+                    self._note_air_client(sender_prefix, "heartbeat")
+                else:
+                    self._unknown_heartbeat_count += 1
+                    log.debug("Heartbeat from %s ignored - not on the "
+                              "allow-list", sender_prefix[:12])
             else:
                 # Everything else is host->client only; hosts ignore
                 # it - but v0.0.050 says the silence out loud: a
@@ -777,6 +807,24 @@ class ScopeService:
             stop.set()
             task.cancel()
 
+    def _note_air_client(self, sender_prefix: str, what: str) -> None:
+        """One over-the-air sign of a listening app (heartbeat or
+        refresh uplink). Loud transitions only - a steady stream logs
+        nothing (the bench found the noise floor)."""
+        now = time.time()
+        fresh = (self._last_air_client_s is not None
+                 and now - self._last_air_client_s <= self.AUDIENCE_WINDOW_S)
+        self._last_air_client_s = now
+        if not fresh:
+            log.info("AIR AUDIENCE %s from %s - node broadcasts "
+                     "resume", what, sender_prefix[:12])
+
+    def _audience_fresh(self) -> bool:
+        """True while an over-the-air client sign is inside the window."""
+        if self._last_air_client_s is None:
+            return False
+        return time.time() - self._last_air_client_s <= self.AUDIENCE_WINDOW_S
+
     async def broadcast_loop(self) -> None:
         """PULSE + LAYOUT + discovery beacon + background summaries.
 
@@ -799,6 +847,29 @@ class ScopeService:
             await asyncio.Event().wait()      # parks until cancelled
             return
         while not self._stop.is_set():
+            # AUDIENCE GATE (Brett's airtime rule, 2026-09-26): the
+            # node's OWN cadence flies only while an over-the-air app
+            # sign (HEARTBEAT / REFRESH_REQ) is inside the 5-minute
+            # window. The demo source ignores the gate so the demo map
+            # never dies on a quiet bench. Refresh ANSWERS are not the
+            # cadence - they always fly when asked (below).
+            fresh = self._audience_fresh()
+            if fresh != self._audience_was:
+                log.info("AIR AUDIENCE %s - node broadcasts %s",
+                         "up" if fresh else "gone (no heartbeat or "
+                         "over-the-air refresh for %.0fs)"
+                         % self.AUDIENCE_WINDOW_S,
+                         "resume" if fresh else "go quiet (repeater "
+                         "door and refresh answers unaffected)")
+                self._audience_was = fresh
+            if not fresh and not self.use_demo:
+                if self._startup_seeded:
+                    self._startup_seeded = False   # audience gone: re-seed
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             if not (self.client.is_connected and self.client.has_slot):
                 if self._startup_seeded:
                     self._startup_seeded = False  # link dropped: re-seed
@@ -942,6 +1013,9 @@ class ScopeService:
             log.info("Layouts heard: %d peer(s) observed, %d own/"
                      "anonymous echo(s) dropped", self._peer_layouts,
                      self._layout_echo)
+            log.info("Heartbeats heard: %d allowed, %d not on the "
+                     "allow-list", self._heartbeat_count,
+                     self._unknown_heartbeat_count)
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

@@ -15,6 +15,9 @@ from meshtech_node.client import CompanionClient
 class FakeRadio:
     """Stands in for CompanionClient's link: records every send."""
 
+    is_connected = True       # the broadcast loop's link check
+    has_slot = True
+
     def __init__(self):
         self.sent = []
 
@@ -28,9 +31,10 @@ def make_service(**feed_overrides):
     settings.area.center_lat = 37.0
     settings.area.center_lon = -122.0
     settings.feed.burst_gap_seconds = 0.0   # tests: no real sleeps
+    use_demo = feed_overrides.pop("use_demo", True)
     for key, value in feed_overrides.items():
         setattr(settings.feed, key, value)
-    return ScopeService(settings, use_demo=True)
+    return ScopeService(settings, use_demo=use_demo)
 
 
 def test_demo_source_is_deterministic():
@@ -757,3 +761,131 @@ def test_noise_poller_idles_without_modem():
         await asyncio.wait_for(svc.noise_loop(), 2.0)   # returns at once
         assert svc.store.noise_samples() == []
     asyncio.run(main())
+
+
+# ------------------------------------------------------------- AUDIENCE GATE
+# (Brett's airtime rule, 2026-09-26: the node's OWN cadence flies only
+# while an over-the-air app sign is inside the 5-minute window; the TCP
+# door never counts; refresh answers always fly when asked.)
+
+def test_heartbeat_opens_the_audience_window():
+    async def run():
+        svc = make_service()
+        assert svc._audience_fresh() is False      # quiet bench: shut
+        hb = codec.Heartbeat(seq=1, origin=0x1234)
+        await svc.on_packet(hb, "aabbccddeeff")
+        assert svc._audience_fresh() is True       # sign heard: open
+        assert svc._heartbeat_count == 1
+    asyncio.run(run())
+
+
+def test_heartbeat_window_expires():
+    async def run():
+        svc = make_service()
+        await svc.on_packet(codec.Heartbeat(seq=1, origin=0x1234),
+                            "aabbccddeeff")
+        assert svc._audience_fresh() is True
+        svc._last_air_client_s -= svc.AUDIENCE_WINDOW_S + 1.0
+        assert svc._audience_fresh() is False      # 5 min of silence
+    asyncio.run(run())
+
+
+def test_air_refresh_also_counts_as_audience():
+    """The initial exchange (a REFRESH_REQ on the air) opens the window
+    too - the app needs no second mechanism to be heard."""
+    async def run():
+        svc = make_service()
+        radio = FakeRadio()
+        svc.client = radio
+        now = time.time()
+        for i in range(3):
+            svc.store.add(type("O", (), {
+                "recv_ts": now, "origin_ts": now - 1.0, "prefix": 0x21,
+                "lat": 37.0, "lon": -122.0,
+                "path_prefixes": [0x11], "channel_name": None,
+                "delay_s": 1.0})())
+        req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION,
+                               target=5, nonce=7)
+        await svc.on_packet(req, "aabbccddeeff")       # over the AIR
+        assert svc._audience_fresh() is True
+        assert radio.sent                               # the answer flew
+    asyncio.run(run())
+
+
+def test_door_refresh_never_counts_as_audience():
+    """Brett's law: TCP is not the mesh. A door ask must not open the
+    radio cadence window."""
+    async def run():
+        svc = make_service()
+        req = codec.RefreshReq(seq=1, kind=codec.REFRESH_KIND_SECTION,
+                               target=5, nonce=8)
+        await svc.on_packet(req, "aabbccddeeff", via_door=True)
+        assert svc._audience_fresh() is False
+    asyncio.run(run())
+
+
+def test_stranger_heartbeat_does_not_open_the_window():
+    """The allow-list that guards refreshes guards heartbeats too: a
+    stranger's keep-alive must not re-open the cadence for the mesh."""
+    async def run():
+        svc = make_service(allowed_prefixes=["aabb"])
+        await svc.on_packet(codec.Heartbeat(seq=1, origin=0x9999),
+                            "ffff00000000")
+        assert svc._audience_fresh() is False
+        assert svc._heartbeat_count == 0
+        assert svc._unknown_heartbeat_count == 1
+    asyncio.run(run())
+
+
+def test_broadcast_loop_goes_quiet_without_audience():
+    """The cadence loop itself: pulse DUE but no audience sign ->
+    nothing flies, and the demo bench (use_demo) bypasses the gate."""
+    async def run():
+        svc = make_service(use_demo=False)   # a REAL host: gate applies
+        radio = FakeRadio()
+        svc.client = radio
+        svc._startup_seeded = True
+        svc.builder._last_pulse = time.time() - 400.0   # pulse DUE
+        async def killer():
+            await asyncio.sleep(0.2)
+            svc._stop.set()
+        k = asyncio.create_task(killer())
+        await asyncio.wait_for(svc.broadcast_loop(), 2.0)
+        await k
+        assert radio.sent == []             # quiet: nothing on the air
+        assert svc._audience_was is False
+        # Demo bench: no audience either, yet the map keeps painting.
+        demo = make_service(use_demo=True)
+        demo_radio = FakeRadio()
+        demo.client = demo_radio
+        demo._startup_seeded = True
+        demo.builder._last_pulse = time.time() - 400.0
+        demo._stop = asyncio.Event()
+        async def killer2():
+            await asyncio.sleep(0.2)
+            demo._stop.set()
+        k2 = asyncio.create_task(killer2())
+        await asyncio.wait_for(demo.broadcast_loop(), 2.0)
+        await k2
+        assert len(demo_radio.sent) > 0     # demo map keeps painting
+    asyncio.run(run())
+
+
+def test_broadcast_loop_sends_when_audience_is_fresh():
+    """A heartbeat inside the window -> the due pulse flies again."""
+    async def run():
+        svc = make_service(use_demo=False)
+        radio = FakeRadio()
+        svc.client = radio
+        svc._startup_seeded = True
+        svc.builder._last_pulse = time.time() - 400.0   # pulse DUE
+        svc._last_air_client_s = time.time()            # live app signed
+        async def killer():
+            await asyncio.sleep(0.2)
+            svc._stop.set()
+        k = asyncio.create_task(killer())
+        await asyncio.wait_for(svc.broadcast_loop(), 2.0)
+        await k
+        types = [t for t, _ in radio.sent]
+        assert codec.TYPE_PULSE in types
+    asyncio.run(run())

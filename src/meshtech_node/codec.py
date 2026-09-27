@@ -69,6 +69,11 @@ TYPE_LAYOUT = 0x5305
 TYPE_SNAP = 0x5306
 TYPE_REFRESH_REQ = 0x5311
 TYPE_GONE = 0x5312
+# HEARTBEAT (0x5313, Brett's airtime rule 2026-09-26): the phone app's
+# tiny keep-alive. NO body beyond the 5-byte header - nothing to go
+# stale, nothing to misread. Its ARRIVAL is the whole message: a live
+# app is on the air listening.
+TYPE_HEARTBEAT = 0x5313
 
 TYPE_NAMES = {
     TYPE_PULSE: "PULSE",
@@ -79,6 +84,7 @@ TYPE_NAMES = {
     TYPE_SNAP: "SNAP",
     TYPE_REFRESH_REQ: "REFRESH_REQ",
     TYPE_GONE: "GONE",
+    TYPE_HEARTBEAT: "HEARTBEAT",
 }
 
 # CMD_SEND_CHANNEL_DATA payload budget (openhop_core constants.py:
@@ -687,6 +693,28 @@ class Gone:
     prefixes: List[int] = field(default_factory=list)  # 1 byte each
 
 
+# --------------------------------------------------------------------------
+# HEARTBEAT (0x5313) - the phone app's keep-alive (Brett's airtime rule)
+# --------------------------------------------------------------------------
+
+@dataclass
+class Heartbeat:
+    seq: int
+    origin: int = 0
+
+
+def encode_heartbeat(h: Heartbeat) -> bytes:
+    """Header ONLY (5 bytes) inside the 3-byte type/len envelope: 8 bytes
+    of plaintext, the smallest packet the format can carry. No body -
+    nothing to decode wrong on either side."""
+    return data_type_bytes(TYPE_HEARTBEAT, pack_header(h.seq, h.origin))
+
+
+def decode_heartbeat(payload: bytes) -> Heartbeat:
+    header, _off = unpack_header(payload)
+    return Heartbeat(seq=header.seq, origin=header.origin)
+
+
 def encode_gone(*, seq: int, origin: int = 0,
                 prefixes: List[int]) -> bytes:
     if len(prefixes) > MAX_GONE_PER_PACKET:
@@ -752,6 +780,8 @@ def decode_body(data_type: int, body: bytes) -> object:
         return decode_refresh_req(body)
     if data_type == TYPE_GONE:
         return decode_gone(body)
+    if data_type == TYPE_HEARTBEAT:
+        return decode_heartbeat(body)
     raise CodecError(f"unknown data_type {data_type:#06x}")
 
 
