@@ -1,5 +1,35 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## SHIPPED + DEPLOYED + PROVEN LIVE (2026-09-26 LATE NIGHT): THE
+## AUDIENCE GATE v00.000.058 (191d13b pushed, hilltop updated 056 ->
+## 058). The node's OWN cadence (LAYOUT/PULSE/SECT_SUM/beacon) flies
+## only while an over-the-air app sign - a HEARTBEAT (new 8-byte type
+## 0x5313) or an on-air REFRESH_REQ - is inside Brett's 5-minute
+## window (his 2/5 call: app sends every 2 min, node quiets after 5).
+## The TCP door NEVER counts (it is not the mesh); refresh answers
+## always fly when asked; heartbeats gate on the allow-list only
+## (budget.prefix_allowed - a keep-alive asks for nothing, cooldown
+## would wrongly silence an app that just got its map); demo bench
+## bypasses; openhop's repeater door + the TX switch are untouched.
+## LIVE PROOF 2026-09-26 22:10-22:15: phone heartbeat -> "AIR
+## AUDIENCE up" -> app closed -> "gone (300s) - broadcasts go quiet",
+## exactly the chosen window. Known cosmetic (quiet only if Brett
+## asks): open/close transitions log two lines each. APP SIDE:
+## meshtech-app v00.000.028 (dafbcd4 on dev) - heartbeat at connect,
+## every 2 min, stops at teardown; release APK built + installed.
+
+## (previous) SHIPPED + DEPLOYED (2026-09-24 LATE): ROUTES ON DISK v00.000.046 -
+## 300 tests green, commit 2cef056 pushed, hilltop updated 045 -> 046,
+## service running clean. Routes now persist in a routes table (same
+## SQLite as nodes), DIRECT packets form one-hop routes, Brett's fade
+## (direct 3d stale/7d dead; multi-hop 7/14) runs on the layout
+## cadence, route death never touches nodes. Boot verified: "226
+## node(s), 16421 repeater tag(s), 0 route(s)" - 0 honest, table was
+## born empty; routes accumulate from live traffic. FULL DETAIL:
+## C:\projects\HANDOFF.md top block + tests/test_route_memory.py.
+## NEXT (Brett's go needed, NOT started): route DETAILS on the connect
+## burst (ids only today) - v00.000.047, TCP-only, no radio cost.
+
 ## BUILT (2026-09-24, Brett's law): PATH SYMMETRY - data leaves on
 ## the path it came in on - 289 tests green, version 00.000.044
 The connect burst (PULSE + LAYOUT + section summaries + full INTRO

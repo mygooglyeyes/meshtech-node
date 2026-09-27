@@ -103,3 +103,36 @@ rehearsal for that - same data, same screen, network instead of RF.
    says go, THEN it is built.
 5. If Buffy does not know, Buffy says "I don't know" and finds out
    - never a guess dressed as a fact.
+6. THE AUDIENCE RULE (Brett, 2026-09-26, proven live on the air):
+   the node's OWN broadcasts (its map updates) fly only while a
+   phone app is actually listening. The app proves it with a tiny
+   HEARTBEAT packet every 2 minutes (plus its first map ask); 5
+   minutes of silence and the node's broadcasts go quiet. No app
+   listening = no airtime spent. The phone asks (a refresh) are
+   ALWAYS answered. The repeater door (openhop transmitting
+   through the modem) and the PC web app's TCP door are NOT the
+   audience - they follow their own rules and never wake the map.
+
+---
+
+## The airtime heartbeat (the audience rule in bytes)
+
+```
+ phone app (open, map up)                 hilltop
+       |                                     |
+       |-- HEARTBEAT (8 bytes) ------------->|  window open:
+       |     every 2 minutes                 |  node broadcasts flow
+       |                                     |
+       X  (app closed)                      |
+       |  ... no heartbeat for 5 min ...    |
+       |                                     |  window closes:
+       |                                     |  node broadcasts quiet
+```
+
+- One new packet type on the feed wire: HEARTBEAT (0x5313), 8
+  bytes, nothing in it but a sequence number - the SMALLEST packet
+  the format can carry.
+- Proven live 2026-09-26: heartbeat heard -> "AIR AUDIENCE up";
+  app closed -> 5 min later "AIR AUDIENCE gone - broadcasts go
+  quiet".
+- App side: meshtech-app v00.000.028; node side: v00.000.058.
