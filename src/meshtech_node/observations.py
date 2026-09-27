@@ -59,6 +59,12 @@ class Observation:
     # Sender's name when the payload carries one (advert appdata); None
     # = honestly unknown, the store keeps whatever it already had.
     node_name: Optional[str] = None
+    # Signal as THIS box heard it (lab plan 2026-09-26, Ch4): the
+    # radio's own RSSI (dBm) and SNR (dB) for this packet. None =
+    # honestly unknown (demo rows, sources without signal metadata) -
+    # never a default constant.
+    rssi: Optional[float] = None
+    snr: Optional[float] = None
 
     @property
     def delay_s(self) -> Optional[float]:
@@ -95,6 +101,11 @@ class RollingStore:
         self._nodes: Dict[int, Dict[str, object]] = {}
         # prefix -> BackboneNeighbor (direct RF links of the host box)
         self._neighbors: Dict[int, BackboneNeighbor] = {}
+        # NOISE FLOOR (lab plan 2026-09-26, Ch4): (ts, dBm-or-None)
+        # samples polled from the radio every 5 min. None = the read
+        # FAILED - an honest gap in the record, never the fabricated
+        # constant that hid the frozen -105 line (v0.0.183).
+        self._noise: Deque[Tuple[float, Optional[float]]] = deque()
         # ROUTE MEMORY (2026-09-24, Brett: routes were never meant to be
         # RAM-only): path tuple -> {first, last, count, delays}.
         # The 1-hour packet window stays RAM-only (scope rule); the
@@ -649,6 +660,21 @@ class RollingStore:
     def add_backbone_neighbor(self, nb: BackboneNeighbor) -> None:
         """Record/refresh one direct RF neighbor (repeater-measured)."""
         self._neighbors[nb.prefix] = nb
+
+    # ------------------------------------------------- noise floor (Ch4)
+
+    NOISE_KEEP = 288              # 24 h at one sample per 5 min
+
+    def add_noise(self, ts: float, noise_dbm: Optional[float]) -> None:
+        """Record one noise-floor poll. None (a failed read) is stored
+        as-is: the gap is the truth, a plausible constant is a lie."""
+        self._noise.append((ts, noise_dbm))
+        while len(self._noise) > self.NOISE_KEEP:
+            self._noise.popleft()
+
+    def noise_samples(self) -> List[Tuple[float, Optional[float]]]:
+        """The recorded noise-floor samples, oldest first."""
+        return list(self._noise)
 
     # ------------------------------------------------- node lifecycle (C3)
 

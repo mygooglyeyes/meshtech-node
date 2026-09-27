@@ -15,6 +15,7 @@
     "refresh_hourly_cap": 5,
     "tx_enabled": false
   },
+  "radio_hardware": "pimesh",
   "modem_conf": "/opt/meshtech-node/modem.conf",
   "modem_token_file": "/opt/meshtech-node/secrets/modem.token",
   "webserve": {

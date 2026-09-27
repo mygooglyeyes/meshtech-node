@@ -75,7 +75,8 @@ class ConfigError(ValueError):
 class ModemConfig:
     host: str = "127.0.0.1"
     port: int = 5055
-    token_file: str = ""            # repeater (observer) token file
+    token_file: str = ""            # observer (monitor) token file
+    repeater_file: str = ""         # repeater (openhop tenant) token file
     controller_file: str = ""       # bot (controller) token file
     bind_lan: bool = False          # False = loopback only (default, safe)
     demo_feed: bool = False
@@ -240,6 +241,8 @@ def build_config(raw: dict) -> ModemConfig:
         cfg.bind_lan = _as_bool("bind_lan", raw["bind_lan"])
     if "token_file" in raw:
         cfg.token_file = raw["token_file"]
+    if "repeater_file" in raw:
+        cfg.repeater_file = raw["repeater_file"]
     if "controller_file" in raw:
         cfg.controller_file = raw["controller_file"]
     if "demo_feed" in raw:

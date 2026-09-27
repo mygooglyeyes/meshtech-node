@@ -34,16 +34,19 @@ def store(tmp_path):
 # ------------------------------------------------------------------ scope
 
 def test_scope_nodes_and_repeaters_only(store):
-    """The agreed scope rule: ONLY the two data tables exist. No
+    """The agreed scope rule: ONLY the agreed data tables exist. No
     packets, no messages - nothing raw, on any device. (Vectored sync
     2026-09-24 adds sync_state + gone_pending: bookkeeping tables
     holding COUNTERS and retirement notices - still no raw data.
     Route memory 2026-09-24 adds routes: one row per PATH with its
-    use count and measured median delay - route facts, not packets.)"""
+    use count and measured median delay - route facts, not packets.
+    Heard-by coverage 2026-09-26 (lab plan Ch5) adds heard_by: one row
+    per (packet hash, observer) with the signal each observer measured
+    - coverage facts, still no raw payloads.)"""
     tables = {r["name"] for r in store._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert tables == {"nodes", "repeaters", "sync_state", "gone_pending",
-                      "routes"}
+                      "routes", "heard_by"}
 
 
 # ------------------------------------------------------------- write-through
@@ -201,3 +204,53 @@ def test_node_forget_mirrors_disk(store):
     counts = ram.prune_nodes()
     assert counts["forgotten"] == 1
     assert store.node_count() == 0          # disk forgot with RAM
+
+
+# ------------------------------------------------- heard-by coverage (Ch5)
+
+def test_heard_by_upsert_is_idempotent_per_observer(store):
+    now = time.time()
+    store.upsert_heard_by("AB12", "obs1", region="SFO", rssi=-80.0,
+                          snr=9.0, ts=now)
+    store.upsert_heard_by("AB12", "obs1", region="SFO", rssi=-75.0,
+                          snr=10.0, ts=now + 5)
+    rows = store.heard_by_rows("AB12")
+    assert len(rows) == 1                   # same observer = one row
+    assert rows[0]["hear_count"] == 2
+    assert rows[0]["rssi"] == -75.0         # newest signal wins
+    assert rows[0]["first_heard"] == now    # origin kept
+    assert rows[0]["last_heard"] == now + 5
+
+
+def test_heard_by_missing_signal_stays_null(store):
+    store.upsert_heard_by("CD34", "obs1")   # no signal reported
+    rows = store.heard_by_rows("CD34")
+    assert rows[0]["rssi"] is None
+    assert rows[0]["snr"] is None           # NULL, never a default
+
+
+def test_coverage_rows_is_the_map(store):
+    now = time.time()
+    # one packet, THREE observers - only obs2 hears the second packet
+    store.upsert_heard_by("H1", "obs1", rssi=-90.0, ts=now)
+    store.upsert_heard_by("H1", "obs2", rssi=-70.0, ts=now)
+    store.upsert_heard_by("H1", "obs3", rssi=-85.0, ts=now)
+    store.upsert_heard_by("H2", "obs2", rssi=-60.0, ts=now)
+    coverage = store.coverage_rows(min_hearers=2)
+    assert [c["packet_hash"] for c in coverage] == ["H1"]
+    hearers = coverage[0]["hearers"]
+    assert [h["observer_id"] for h in hearers] == ["obs2", "obs3", "obs1"]
+    assert hearers[0]["rssi"] == -70.0      # strongest first
+
+
+def test_heard_by_table_is_bounded(store):
+    store.prune_heard_by(max_rows=3)        # empty table: nothing to cut
+    assert store.prune_heard_by(max_rows=3) == 0
+    base = time.time()
+    for i in range(10):
+        store.upsert_heard_by(f"X{i}", "obs", ts=base + i)
+    deleted = store.prune_heard_by(max_rows=3)
+    assert deleted == 7                     # oldest out first
+    rows = store.heard_by_rows()
+    assert [r["packet_hash"] for r in rows] == ["X7", "X8", "X9"]
+    assert store.heard_by_count() == 3

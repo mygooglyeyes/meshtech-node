@@ -209,6 +209,7 @@ class RawPacketSource:
             channel_name=None,
             node_class=0,
             node_name=None,
+            rssi=rx.rssi, snr=rx.snr,   # Ch4: the box's own signal facts
         )
 
     def _emit_scope(self, decoded: Optional[Tuple[ChannelKeys, bytes, float]],
@@ -328,6 +329,7 @@ class RawPacketSource:
             channel_name=None,
             node_class=info.node_class,
             node_name=info.name,
+            rssi=rx.rssi, snr=rx.snr,   # Ch4: the box's own signal facts
         )
 
     def _from_group(self, rx: RxPacket, frame: FrameParts) -> Optional[Observation]:
@@ -373,6 +375,7 @@ class RawPacketSource:
             channel_name=channel.name,
             node_class=0,
             node_name=None,
+            rssi=rx.rssi, snr=rx.snr,   # Ch4: the box's own signal facts
         )
 
     @staticmethod

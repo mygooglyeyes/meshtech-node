@@ -48,6 +48,8 @@ class InProcessRadio:
         _clog.setLevel(logging.getLogger("meshtech-node").getEffectiveLevel())
         observer_token = load_token(cfg.token_file) \
             if cfg.token_file else ""
+        repeater_token = load_token(cfg.repeater_file) \
+            if cfg.repeater_file else ""
         controller_token = load_token(cfg.controller_file) \
             if cfg.controller_file else ""
 
@@ -72,7 +74,8 @@ class InProcessRadio:
 
         self._server = ModemServer(cfg, self._hal,
                                    observer_token=observer_token,
-                                   controller_token=controller_token)
+                                   controller_token=controller_token,
+                                   repeater_token=repeater_token)
         if not await self._server.start():
             raise RuntimeError(
                 f"radio/loopback server failed to start (modem.conf="

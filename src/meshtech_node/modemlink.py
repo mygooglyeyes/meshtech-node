@@ -123,6 +123,21 @@ class ModemTransport:
             log.exception("modem TX raised - refused honestly")
             return False
 
+    # --------------------------------------------------------- noise --
+    async def noise(self) -> Optional[float]:
+        """One noise-floor read through the link (Ch4, every 5 min).
+
+        None = no link or a failed read - an honest gap, never a
+        fabricated constant (the frozen -105 lesson)."""
+        client = self._client
+        if self._closed or client is None:
+            return None
+        try:
+            return await client.noise()
+        except Exception:
+            log.exception("modem noise read raised - answering honestly")
+            return None
+
     # ----------------------------------------------------------- RX ----
     async def _on_rx(self, rssi: int, snr: float, signal_rssi: int,
                      data: bytes) -> None:

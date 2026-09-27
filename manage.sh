@@ -280,7 +280,10 @@ install_python_deps() {
   # hilltop ran WITHOUT it once and the gate refused every advert
   # while the log said "signature invalid". It installs with the rest,
   # every time.
-  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome pynacl
+  # paho-mqtt (2026-09-26, lab plan Ch5): the MQTT collector's client.
+  # The collector is opt-in (mqtt.enabled off by default); the package
+  # installs with the rest so flipping the switch never needs a pip run.
+  "$APPDIR/.venv/bin/pip" install --quiet -e "$APPDIR" aiohttp pycryptodome pynacl paho-mqtt
   "$APPDIR/.venv/bin/python" -c "import spidev" 2>/dev/null \
     || "$APPDIR/.venv/bin/pip" install --quiet spidev \
     || echo "WARNING: spidev unavailable - radio will not start"
@@ -312,6 +315,20 @@ do_install() {
     echo "- internal radio secret generated (stored root-only; the user"
     echo "  never needs it - rotate any time with: sudo ./manage.sh passwords)"
   fi
+  # The repeater tenant's own token (openhop's driver in the lab).
+  # Separate file on purpose: the shared modem.token resolves to the
+  # CONTROLLER role, so a tenant must never be handed that one.
+  if [[ -f "$APPDIR/secrets/repeater.token" ]]; then
+    echo "- repeater secret already exists - keeping it"
+  else
+    umask 077
+    python3 -c 'import secrets; print(secrets.token_urlsafe(24))' \
+      > "$APPDIR/secrets/repeater.token"
+    chmod 600 "$APPDIR/secrets/repeater.token"
+    umask 022
+    echo "- repeater secret generated (its token is shown by the"
+    echo "  lab bring-up steps, never printed here)"
+  fi
   [[ -f "$APPDIR/modem.conf" ]] || cp deploy/modem.conf "$APPDIR/modem.conf"
   [[ -f "$APPDIR/config.json" ]] || cp deploy/config.json "$APPDIR/config.json"
   guided_radio_questions
@@ -321,7 +338,11 @@ do_install() {
   # (coding_rate 5 = CR 4/5): cleanmodem's parser takes the INDEX
   # (1..4). 5 meant CR 4/5 then; write the index 1 that means the same.
   sed -i 's/^coding_rate *= *5/coding_rate = 1/' "$APPDIR/modem.conf"
-  sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
+  sed -i "s|^token_file *=.*|token_file = $APPDIR/secrets/modem.token|; s|^repeater_file *=.*|repeater_file = $APPDIR/secrets/repeater.token|; s|^controller_file *=.*|controller_file = $APPDIR/secrets/modem.token|" "$APPDIR/modem.conf"
+  # Pre-repeater modem.conf has no repeater_file line at all - add it
+  # so the lab's repeater door is wired the same on every box.
+  grep -q '^repeater_file *=' "$APPDIR/modem.conf" \
+    || echo "repeater_file = $APPDIR/secrets/repeater.token" >> "$APPDIR/modem.conf"
   sed -i "s|\"modem_conf\": *\"[^\"]*\"|\"modem_conf\": \"$APPDIR/modem.conf\"|; s|\"modem_token_file\": *\"[^\"]*\"|\"modem_token_file\": \"$APPDIR/secrets/modem.token\"|; s|\"static_dir\": *\"[^\"]*\"|\"static_dir\": \"$APPDIR/app\"|" "$APPDIR/config.json"
   echo "- writing the service file (runs from $APPDIR)"
   sed "s|@APPDIR@|$APPDIR|g" deploy/meshtech-node.service > /etc/systemd/system/${SERVICE}.service
@@ -383,8 +404,13 @@ do_passwords() {
   python3 -c 'import secrets; print(secrets.token_urlsafe(24))' \
     > "$APPDIR/secrets/modem.token"
   chmod 600 "$APPDIR/secrets/modem.token"
+  python3 -c 'import secrets; print(secrets.token_urlsafe(24))' \
+    > "$APPDIR/secrets/repeater.token"
+  chmod 600 "$APPDIR/secrets/repeater.token"
   umask 022
-  echo "Internal radio secret rotated ($APPDIR/secrets/modem.token, mode 600)."
+  echo "Internal radio secrets rotated (modem.token + repeater.token under"
+  echo "$APPDIR/secrets, mode 600). After the restart, openhop needs the"
+  echo "new repeater token pasted into its config."
   echo
   echo "If the service is running, restart it to use the new password:"
   echo "  sudo ./manage.sh restart"

@@ -118,6 +118,30 @@ _MIGRATIONS: List[tuple] = [
         """,
         "CREATE INDEX IF NOT EXISTS idx_routes_last_heard ON routes(last_heard)",
     ]),
+    # HEARD-BY COVERAGE (2026-09-26, lab plan Ch5): the collector
+    # (mqttsource) records WHICH observer heard WHICH packet - the same
+    # packet hash reported by several observers is the coverage map
+    # (repeater-planning gold). One row per (hash, observer): re-hearing
+    # is an upsert, never a duplicate. No raw payloads - hash, observer,
+    # region and the signal each observer measured, nothing more.
+    # Bounded like every table here (size cap, oldest out first): a
+    # time-based fade law is Brett's call, not a guess.
+    (4, [
+        """
+        CREATE TABLE IF NOT EXISTS heard_by (
+            packet_hash   TEXT NOT NULL,       -- observer-reported packet hash
+            observer_id   TEXT NOT NULL,       -- observer pubkey hex (the hearer)
+            region        TEXT NOT NULL DEFAULT '',  -- IATA region from the topic
+            rssi          REAL,                -- NULL = honestly unknown
+            snr           REAL,
+            first_heard   REAL NOT NULL,
+            last_heard    REAL NOT NULL,
+            hear_count    INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (packet_hash, observer_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_heard_by_last_heard ON heard_by(last_heard)",
+    ]),
 ]
 
 
@@ -143,6 +167,7 @@ class NodeStore:
         # per-message fsync stall while staying crash-safe (worst case on
         # power cut: the last commits are lost, never a corrupted database).
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._heard_writes = 0      # heard_by upserts since open (cap gate)
         self._migrate()
 
     # ---------------------------------------------------------------- schema
@@ -432,3 +457,104 @@ class NodeStore:
                 [(p.hex(),) for p in path_hex_list])
         total = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
         return total
+
+    # ----------------------------------------------------------- heard-by
+
+    HEARD_BY_MAX_ROWS = 50_000       # size cap; oldest rows out first
+
+    def upsert_heard_by(self, packet_hash: str, observer_id: str, *,
+                        region: str = "", rssi: Optional[float] = None,
+                        snr: Optional[float] = None,
+                        ts: Optional[float] = None) -> None:
+        """Record one observer hearing one packet (Ch5, write-through
+        from the MQTT collector). Same (hash, observer) again = the
+        newest signal wins, hear_count grows, first_heard keeps its
+        origin. rssi/snr stay NULL when the report carried none."""
+        if not packet_hash or not observer_id:
+            return                     # nothing identifiable to record
+        ts = ts if ts is not None else _now()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO heard_by (packet_hash, observer_id, region,
+                                      rssi, snr, first_heard, last_heard,
+                                      hear_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(packet_hash, observer_id) DO UPDATE SET
+                    region      = excluded.region,
+                    rssi        = excluded.rssi,
+                    snr         = excluded.snr,
+                    last_heard  = MAX(heard_by.last_heard, excluded.last_heard),
+                    hear_count  = heard_by.hear_count + 1,
+                    first_heard = MIN(heard_by.first_heard, excluded.first_heard)
+                """,
+                (str(packet_hash), str(observer_id), str(region or ""),
+                 float(rssi) if rssi is not None else None,
+                 float(snr) if snr is not None else None,
+                 float(ts), float(ts)),
+            )
+        # Bounded table: every 256 writes, evict oldest-over-cap rows.
+        self._heard_writes += 1
+        if self._heard_writes % 256 == 0:
+            self.prune_heard_by()
+
+    def heard_by_rows(self, packet_hash: Optional[str] = None,
+                      ) -> List[Dict[str, object]]:
+        """Coverage rows (optionally for one packet hash), oldest first."""
+        if packet_hash is not None:
+            rows = self._conn.execute(
+                "SELECT * FROM heard_by WHERE packet_hash = ? "
+                "ORDER BY last_heard",
+                (str(packet_hash),)).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM heard_by ORDER BY last_heard").fetchall()
+        return [dict(r) for r in rows]
+
+    def coverage_rows(self, min_hearers: int = 2,
+                      ) -> List[Dict[str, object]]:
+        """THE coverage map: packet hashes heard by min_hearers or more
+        DIFFERENT observers, with each hearer's signal. Returns one row
+        per hash: {packet_hash, hearers: [{observer_id, region, rssi,
+        snr, last_heard}, ...]} (strongest hearer first)."""
+        rows = self._conn.execute(
+            "SELECT * FROM heard_by WHERE packet_hash IN ("
+            "  SELECT packet_hash FROM heard_by"
+            "  GROUP BY packet_hash HAVING COUNT(*) >= ?"
+            ") ORDER BY packet_hash, last_heard",
+            (int(min_hearers),)).fetchall()
+        out: Dict[str, Dict[str, object]] = {}
+        for r in rows:
+            entry = out.setdefault(r["packet_hash"],
+                                   {"packet_hash": r["packet_hash"],
+                                    "hearers": []})
+            entry["hearers"].append({
+                "observer_id": r["observer_id"],
+                "region": r["region"],
+                "rssi": r["rssi"],
+                "snr": r["snr"],
+                "last_heard": r["last_heard"],
+            })
+        for entry in out.values():
+            entry["hearers"].sort(
+                key=lambda h: -(h["rssi"] if h["rssi"] is not None
+                                else -999.0))
+        return list(out.values())
+
+    def heard_by_count(self) -> int:
+        return int(self._conn.execute(
+            "SELECT COUNT(*) FROM heard_by").fetchone()[0])
+
+    def prune_heard_by(self, max_rows: Optional[int] = None) -> int:
+        """Size-cap eviction: keep the newest max_rows by last_heard,
+        delete the rest (returns rows deleted). The table is bounded
+        like every memory here; a time-based fade needs Brett's word."""
+        cap = int(max_rows if max_rows is not None
+                  else self.HEARD_BY_MAX_ROWS)
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM heard_by WHERE rowid IN ("
+                "  SELECT rowid FROM heard_by"
+                "  ORDER BY last_heard DESC LIMIT -1 OFFSET ?)",
+                (cap,))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0

@@ -52,15 +52,18 @@ def main(argv=None) -> int:
 
     try:
         observer_token = load_token(cfg.token_file) if cfg.token_file else ""
+        repeater_token = (load_token(cfg.repeater_file)
+                          if cfg.repeater_file else "")
         controller_token = (load_token(cfg.controller_file)
                             if cfg.controller_file else "")
     except ConfigError as exc:
         log.error("%s - refusing to start with a loose token file", exc)
         return 2
 
-    if not observer_token and not controller_token:
+    if not observer_token and not controller_token and not repeater_token:
         log.warning("no token files configured - clients can authenticate "
-                    "as neither role; set token_file / controller_file")
+                    "as no role; set token_file / repeater_file / "
+                    "controller_file")
 
     # Import lazily so a dry config check never touches hardware libs.
     from .sx126x import SX126xRadio
@@ -82,7 +85,8 @@ def main(argv=None) -> int:
 
     server = ModemServer(cfg, radio,
                          observer_token=observer_token,
-                         controller_token=controller_token)
+                         controller_token=controller_token,
+                         repeater_token=repeater_token)
 
     async def _run() -> int:
         if not await server.start():

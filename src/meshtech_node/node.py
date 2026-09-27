@@ -76,6 +76,9 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
     brain.external_source = source
     brain.tx_enabled = settings.feed.tx_enabled   # C2: one source
 
+    # MQTT config (Ch5/Ch6): reached defensively - tools and tests
+    # build settings stand-ins that predate the mqtt block.
+    mqtt_cfg = getattr(settings, "mqtt", None)
     # DISK MEMORY (2026-09-21, Brett: "use the database we made"): the
     # plugin's SQLite store adopted for nodes + repeaters. Every fact
     # is written through as learned; the boot refill below restores
@@ -111,6 +114,23 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
                 log.info("disk memory restored: %d node(s), %d repeater "
                          "tag(s), %d route(s) from %s", n_nodes, n_tags,
                          n_routes, settings.storage.db_path)
+            # MQTT COLLECTOR (lab plan 2026-09-26, Ch5): opt-in
+            # coverage collection from the public observers. OFF
+            # unless config says otherwise; needs the disk store (the
+            # heard-by table lives there) and never publishes.
+            if mqtt_cfg is not None and mqtt_cfg.enabled:
+                from .mqttsource import MqttCollector
+                brain.mqtt = MqttCollector(mqtt_cfg, disk)
+                log.info("MQTT collector armed (broker %s:%d, topic %s)",
+                         mqtt_cfg.host, mqtt_cfg.port, mqtt_cfg.topic)
+        elif mqtt_cfg is not None and mqtt_cfg.enabled:
+            log.warning("mqtt.enabled is set but the node database is "
+                        "unavailable - MQTT collection stays OFF (the "
+                        "gap is honest).")
+    elif mqtt_cfg is not None and mqtt_cfg.enabled:
+        log.warning("mqtt.enabled is set but companion mode keeps no "
+                    "database - MQTT collection stays OFF (the gap is "
+                    "honest).")
 
     # Connect-time PULSE (Brett 2026-09-21): a new web client gets the
     # Feed-health card filled immediately. HOST feeds only - a companion
@@ -222,9 +242,14 @@ def _modem_endpoint(settings) -> tuple:
     server binds the endpoint from modem.conf - so that is what the
     node must dial, not the plugin-era companion default. One source
     of truth: read modem.conf, never a second hardcoded port.
+    CH2 (2026-09-26): radio_hardware=ethermesh means the radio is a
+    NETWORK modem (EtherMesh-1W) - nothing is embedded, the device IS
+    the endpoint, so companion_host/companion_port name it directly.
     Falls back to the settings' companion endpoint (bench/standalone
     cleanmodem layouts).
     """
+    if getattr(settings, "radio_hardware", "pimesh") == "ethermesh":
+        return settings.companion_host, settings.companion_port
     modem_conf = getattr(settings, "modem_conf", "")
     if modem_conf:
         try:
@@ -234,6 +259,35 @@ def _modem_endpoint(settings) -> tuple:
             log.warning("could not derive modem endpoint from %s (%s) - "
                         "falling back to companion endpoint", modem_conf, exc)
     return settings.companion_host, settings.companion_port
+
+
+def _embedded_radio(settings, bench: bool):
+    """The in-process radio server (pimesh hardware), or None to dial out.
+
+    CH2 (2026-09-26): radio_hardware decides WHO owns the radio.
+    "pimesh" = the HAT on this Pi: modem_conf embeds cleanmodem's
+    server in-process. "ethermesh" = a network modem (EtherMesh-1W):
+    the node embeds NOTHING and dials the device through the proven
+    ModemClient path - modem_conf describes hardware not attached to
+    THIS machine, so it is ignored (said out loud, never silently).
+    Bench mode never embeds. Factored out so tests can hold the
+    decision to its word.
+    """
+    modem_conf = getattr(settings, "modem_conf", "")
+    hardware = getattr(settings, "radio_hardware", "pimesh")
+    if hardware == "ethermesh":
+        if modem_conf:
+            log.warning("radio_hardware=ethermesh: modem_conf (%s) is "
+                        "ignored - the radio is the network modem at "
+                        "%s:%d", modem_conf, settings.companion_host,
+                        settings.companion_port)
+        log.info("radio hardware: ethermesh (network modem at %s:%d)",
+                 settings.companion_host, settings.companion_port)
+        return None
+    if modem_conf and not bench:
+        from .inprocess import InProcessRadio
+        return InProcessRadio(modem_conf)
+    return None
 
 
 def _load_modem_config(modem_conf: str):
@@ -291,11 +345,8 @@ async def _main(argv: Optional[list] = None) -> int:
     # thing): when config names a modem.conf, the node embeds
     # cleanmodem's radio server in-process (root required on the box),
     # then connects to its own loopback through the proven client.
-    radio = None
-    modem_conf = getattr(settings, "modem_conf", "")
-    if modem_conf and not bench:
-        from .inprocess import InProcessRadio
-        radio = InProcessRadio(modem_conf)
+    radio = _embedded_radio(settings, bench)
+    if radio is not None:
         await radio.start()          # raises loudly on radio failure
 
     source, sender, brain, serve = _build(settings, bench_no_radio=bench)
@@ -350,6 +401,9 @@ async def _main(argv: Optional[list] = None) -> int:
         asyncio.create_task(brain.run(), name="brain"),
         asyncio.create_task(stop.wait(), name="stop"),
     ]
+    mqtt = getattr(brain, "mqtt", None)
+    if mqtt is not None:
+        tasks.append(asyncio.create_task(mqtt.run(stop), name="mqtt"))
     if modem is not None:
         # Real mode: bring the modem link up BEFORE the brain's cadence
         # seeds (a link that dies at startup must be loud, not silent).

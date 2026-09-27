@@ -1,8 +1,11 @@
 """The modem server: one port, role-by-token, wire-speed fan-out.
 
 Roles:
-- observer: the repeater's driver (RX feed only; TX refused server-side).
-- controller: the bot (RX feed + exclusive TX rights).
+- observer: a monitor client (RX feed only; TX refused server-side).
+- repeater: openhop's driver in a REAL-repeater lab (RX feed + TX
+  rights through the same gate as the controller; radio config stays
+  ours - its SET_CONFIG gets an echo, never an apply).
+- controller: the bot (RX feed + TX rights + config authority).
 
 Hardening (every rule here earned, see the plan):
 - Auth is mandatory; tokens come from protected files; comparison is
@@ -55,6 +58,7 @@ DEMO_SYNC_WORD = 0x12
 OBSERVER_IDLE_TIMEOUT_S = None  # None = no idle timeout (read blocks)
 
 ROLE_OBSERVER = "observer"
+ROLE_REPEATER = "repeater"
 ROLE_CONTROLLER = "controller"
 ROLE_NONE = "none"
 
@@ -68,6 +72,31 @@ OBSERVER_COMMANDS = frozenset({
     frames.CMD_PING, frames.CMD_STATUS_REQ, frames.CMD_NOISE_REQ,
     frames.CMD_GET_CONFIG, frames.CMD_GET_VERSION, frames.CMD_RX_START,
 })
+
+# The repeater role (2026-09-26, Brett's lab: openhop repeats through
+# THIS radio): an observer plus TX_REQUEST and CAD_REQUEST (its own
+# LBT pre-checks). TX still funnels through the one gate below -
+# politeness gap, clear-channel wait, queue cap all unchanged. SET_CONFIG
+# / SET_CAD_PARAMS stay in the proposal/echo path: the radio config's
+# single authority is the controller + modem.conf, never a tenant.
+REPEATER_COMMANDS = OBSERVER_COMMANDS | frozenset({
+    frames.CMD_TX_REQUEST, frames.CMD_CAD_REQUEST,
+})
+
+# Per-role command sets for the _dispatch gate. The controller is not
+# listed: it may send anything (its TX/CAD still runs through the one
+# gate below). SET_CONFIG / SET_CAD_PARAMS bypass this table for every
+# role and are handled in the proposal/echo path.
+ROLE_COMMANDS = {
+    ROLE_OBSERVER: OBSERVER_COMMANDS,
+    ROLE_REPEATER: REPEATER_COMMANDS,
+}
+
+# Roles that consume the RX feed. Both are exempt from the idle read
+# recycle (openhop_core's TCPLoRaRadio sends nothing after its
+# handshake regardless of which role it auths as) and both count on
+# the controller's observer-state chip.
+FEED_LISTENER_ROLES = (ROLE_OBSERVER, ROLE_REPEATER)
 
 
 def _peer_s(writer: asyncio.StreamWriter) -> str:
@@ -96,11 +125,13 @@ class ModemServer:
 
     def __init__(self, cfg: ModemConfig, hal: RadioHal,
                  observer_token: str = "",     # nosec B107 - empty = role unavailable (fail closed), not a password
-                 controller_token: str = "") -> None:
+                 controller_token: str = "",
+                 repeater_token: str = "") -> None:
         self.cfg = cfg
         self.hal = hal
         self.observer_token = observer_token
         self.controller_token = controller_token
+        self.repeater_token = repeater_token
         self.stats = ServerStats()
         self._clients: Dict[asyncio.StreamWriter, ClientCtx] = {}
         self._server: Optional[asyncio.AbstractServer] = None
@@ -134,9 +165,11 @@ class ModemServer:
         sockets = ", ".join(
             str(s.getsockname()) for s in
             (self._server.sockets or []))
-        log.info("modem listening on %s (observer %s, controller %s)",
+        log.info("modem listening on %s (observer %s, repeater %s, "
+                 "controller %s)",
                  sockets,
                  "token set" if self.observer_token else "OPEN (no token)",
+                 "token set" if self.repeater_token else "UNAVAILABLE",
                  "token set" if self.controller_token else "UNAVAILABLE")
         self._metrics_task = asyncio.create_task(
             self._metrics_loop(), name="metrics")
@@ -271,8 +304,11 @@ class ModemServer:
                     if not await self._dispatch(ctx, writer, cmd, payload):
                         return
                 try:
-                    if ctx.authenticated and ctx.role == ROLE_OBSERVER:
-                        chunk = await reader.read(4096)   # no idle recycle
+                    if (ctx.authenticated
+                            and ctx.role in FEED_LISTENER_ROLES):
+                        # No idle recycle: openhop's TCPLoRaRadio sends
+                        # nothing after its handshake on a quiet mesh.
+                        chunk = await reader.read(4096)
                     else:
                         chunk = await asyncio.wait_for(
                             reader.read(4096),
@@ -300,7 +336,7 @@ class ModemServer:
         ctx = self._clients.pop(writer, None)
         if ctx is None:
             return
-        was_observer = ctx.role == ROLE_OBSERVER
+        was_observer = ctx.role in FEED_LISTENER_ROLES
         self.stats.clients_dropped += 1
         try:
             writer.close()
@@ -325,13 +361,7 @@ class ModemServer:
         Single attempt per connection (the protocol AUTH path keeps
         its own throttling for frame-based clients)."""
         supplied = first.decode("utf-8", "replace").strip()
-        role = ROLE_NONE
-        if self.controller_token and hmac.compare_digest(
-                supplied, self.controller_token):
-            role = ROLE_CONTROLLER
-        elif self.observer_token and hmac.compare_digest(
-                supplied, self.observer_token):
-            role = ROLE_OBSERVER
+        role = self._resolve_role(supplied)
         if role == ROLE_NONE:
             self.stats.auth_failures += 1
             log.warning("raw-token auth rejected for %s", ctx.peer)
@@ -342,11 +372,7 @@ class ModemServer:
                 pass
             self._drop(writer, "auth rejected")
             return False
-        if role == ROLE_CONTROLLER:
-            for other_writer, other in list(self._clients.items()):
-                if other is not ctx and other.role == ROLE_CONTROLLER:
-                    log.warning("controller displaced by %s", ctx.peer)
-                    self._drop(other_writer, "displaced")
+        self._displace_same_role(ctx, role)
         ctx.authenticated = True
         ctx.role = role
         log.info("auth accepted: %s as %s (raw token)", ctx.peer, role)
@@ -355,17 +381,51 @@ class ModemServer:
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
             return False
-        if role == ROLE_CONTROLLER:
+        if role == ROLE_CONTROLLER or role in FEED_LISTENER_ROLES:
             # v0.0.173: initial observer count so the controller's
-            # dashboard starts truthful ("TCP Push" chip).
-            await self._notify_observers_changed()
-        elif role == ROLE_OBSERVER:
+            # dashboard starts truthful ("TCP Push" chip) - and any
+            # feed-listener join/leave flips it (repeater included).
             await self._notify_observers_changed()
         return True
 
+    def _resolve_role(self, supplied: str) -> str:
+        """Map a presented token to a role (most powerful first).
+
+        A token file that was never configured means that role is
+        UNAVAILABLE (fail closed) - an empty or missing token never
+        matches anything. Distinct tokens per role are the deployer's
+        job; when one token is reused for two roles, the more powerful
+        role wins, same as before the repeater role existed.
+        """
+        if self.controller_token and hmac.compare_digest(
+                supplied, self.controller_token):
+            return ROLE_CONTROLLER
+        if self.repeater_token and hmac.compare_digest(
+                supplied, self.repeater_token):
+            return ROLE_REPEATER
+        if self.observer_token and hmac.compare_digest(
+                supplied, self.observer_token):
+            return ROLE_OBSERVER
+        return ROLE_NONE
+
+    def _displace_same_role(self, ctx: "ClientCtx", role: str) -> None:
+        """Single-slot roles: a fresh controller/repeater connection
+        drops a stale one (self-healing after a crash - the dead TCP
+        session would otherwise linger until keepalive reaps it while
+        the restarted client floods reconnects)."""
+        if role not in (ROLE_CONTROLLER, ROLE_REPEATER):
+            return
+        for other_writer, other in list(self._clients.items()):
+            if other is not ctx and other.role == role:
+                log.warning("%s displaced by %s", role, ctx.peer)
+                self._drop(other_writer, "displaced")
+
     def _observer_count(self) -> int:
+        # Feed listeners = what the controller's TCP-push chip tracks:
+        # monitors AND the repeater's driver count, whichever role
+        # openhop auths as on this modem.
         return sum(1 for c in self._clients.values()
-                   if c.role == ROLE_OBSERVER)
+                   if c.role in FEED_LISTENER_ROLES)
 
     async def _notify_observers_changed(self) -> None:
         """Tell the controller how many observers are connected.
@@ -434,19 +494,21 @@ class ModemServer:
             await self._send(writer, frames.CMD_PONG)
             return True
 
-        # TX and CAD need the controller role - enforced HERE, so a
-        # misconfigured observer can never touch the air. SET_CONFIG and
-        # SET_CAD_PARAMS fall through: below, observers get their
-        # proposal answered with an echo (read-only) - openhop_core's
-        # TCPLoRaRadio handshakes with both and treats rejections as a
-        # dead link.
-        if cmd not in OBSERVER_COMMANDS \
+        # Role command gate - enforced HERE, so a misconfigured client
+        # can never touch the air beyond its role: TX/CAD belong to the
+        # controller and the repeater only, and the repeater's TX still
+        # funnels through the same politeness gate as the controller's.
+        # SET_CONFIG and SET_CAD_PARAMS fall through: below,
+        # non-controllers get their proposal answered with an echo
+        # (read-only) - openhop_core's TCPLoRaRadio handshakes with both
+        # and treats rejections as a dead link.
+        if ctx.role != ROLE_CONTROLLER \
                 and cmd not in (frames.CMD_SET_CONFIG,
                                 frames.CMD_SET_CAD_PARAMS) \
-                and ctx.role != ROLE_CONTROLLER:
+                and cmd not in ROLE_COMMANDS.get(ctx.role, frozenset()):
             self.stats.auth_failures += 1
-            log.warning("TX attempt by role=%s (%s) - refused",
-                        ctx.role, ctx.peer)
+            log.warning("command 0x%02X refused for role=%s (%s)",
+                        cmd, ctx.role, ctx.peer)
             await self._send(writer, frames.CMD_ERROR,
                              bytes([frames.ERR_UNAUTHORIZED]))
             return True
@@ -470,12 +532,13 @@ class ModemServer:
                     if not ok:
                         log.warning("radio rejected the new config")
                 else:
-                    # Observer proposal: validate the shape, answer with
-                    # the LIVE config. The chip parameters stay ours;
-                    # openhop_core's driver just needs an echo to call
-                    # the link healthy.
+                    # Non-controller proposal (observer or repeater):
+                    # validate the shape, answer with the LIVE config.
+                    # The chip parameters stay ours; openhop_core's
+                    # driver just needs an echo to call the link healthy.
                     self._describe_config(payload)      # raises on malformed
-                    log.info("observer config proposal: %s (kept %s)",
+                    log.info("config proposal from %s: %s (kept %s)",
+                             ctx.role,
                              self._describe_config(payload),
                              self._describe_config(self._config_bytes))
             await self._send(writer, frames.CMD_CONFIG_RESP,
@@ -494,12 +557,12 @@ class ModemServer:
 
         if cmd == frames.CMD_SET_CAD_PARAMS:
             if ctx.role != ROLE_CONTROLLER:
-                # Observer proposal (repeater restores its cached CAD
-                # settings at connect): echo only - CAD runs before a
-                # TX and observers cannot TX, so the live CAD params
-                # (the controller's pre-check tuning) stay untouched.
-                log.info("observer CAD params proposal (echoed): %s",
-                         payload.hex())
+                # Non-controller proposal (the repeater restores its
+                # cached CAD settings at connect): echo only - the live
+                # CAD params (the controller's pre-check tuning) stay
+                # untouched; a tenant never retunes the shared radio.
+                log.info("CAD params proposal from %s (echoed): %s",
+                         ctx.role, payload.hex())
             await self._send(writer, frames.CMD_CAD_PARAMS_RESP, payload)
             return True
 
@@ -559,17 +622,7 @@ class ModemServer:
             await asyncio.sleep(AUTH_THROTTLE_S * ctx.auth_attempts)
         ctx.auth_attempts += 1
 
-        role = ROLE_NONE
-        if self.controller_token and hmac.compare_digest(
-                supplied, self.controller_token):
-            role = ROLE_CONTROLLER
-        elif self.observer_token and hmac.compare_digest(
-                supplied, self.observer_token):
-            role = ROLE_OBSERVER
-        elif not self.observer_token:
-            # No observer token configured = fail closed for the role;
-            # only the controller token (if any) is accepted.
-            role = ROLE_NONE
+        role = self._resolve_role(supplied)
 
         if role == ROLE_NONE:
             self.stats.auth_failures += 1
@@ -579,25 +632,20 @@ class ModemServer:
                              bytes([frames.ERR_UNAUTHORIZED]))
             return True
 
-        if role == ROLE_CONTROLLER:
-            # Single controller slot: a new controller displaces a stale
-            # one (self-healing after a bot crash).
-            for other_writer, other in list(self._clients.items()):
-                if other is not ctx and other.role == ROLE_CONTROLLER:
-                    log.warning("controller displaced by %s", ctx.peer)
-                    self._drop(other_writer, "displaced")
+        self._displace_same_role(ctx, role)
         ctx.authenticated = True
         ctx.role = role
         log.info("auth accepted: %s as %s", ctx.peer, role)
         await self._send(writer, frames.CMD_AUTH_OK)
-        if role in (ROLE_CONTROLLER, ROLE_OBSERVER):
+        if role in (ROLE_CONTROLLER,) + FEED_LISTENER_ROLES:
             # v0.0.173: observer join/leave -> the controller's chip.
             await self._notify_observers_changed()
         return True
 
     async def _handle_tx(self, writer: asyncio.StreamWriter,
                          payload: bytes) -> None:
-        """One controller transmission with the full politeness ritual."""
+        """One role-authorized transmission (controller or repeater)
+        with the full politeness ritual - one gate for every sender."""
         if not payload or len(payload) > frames.MAX_LORA_PAYLOAD:
             await self._send(writer, frames.CMD_ERROR,
                              bytes([frames.ERR_PAYLOAD_TOO_BIG]))

@@ -704,3 +704,56 @@ def test_rx_accepts_body_only_companion_payload():
         assert len(seen) == 2 and seen[1].active_total == 42
 
     asyncio.run(run())
+
+
+# -------------------------------------------------- noise floor (Ch4) ----
+
+def test_noise_ring_keeps_honest_gaps_and_caps():
+    from meshtech_node.observations import RollingStore
+    store = RollingStore()
+    store.add_noise(100.0, -104.5)
+    store.add_noise(200.0, None)          # failed read = gap, not a fake
+    store.add_noise(300.0, -102.0)
+    assert store.noise_samples() == [(100.0, -104.5), (200.0, None),
+                                     (300.0, -102.0)]
+    for i in range(400):                  # beyond the 24h ring
+        store.add_noise(400.0 + i, -100.0)
+    samples = store.noise_samples()
+    assert len(samples) == RollingStore.NOISE_KEEP
+    assert samples[0][0] == 400.0 + (400 - RollingStore.NOISE_KEEP)
+
+
+def test_noise_poller_records_values_and_gaps():
+    class FakeModem:
+        def __init__(self):
+            self.calls = 0
+
+        async def noise(self):
+            self.calls += 1
+            return None if self.calls % 2 == 0 else -103.5
+
+    class FakeClient:
+        def __init__(self):
+            self.modem = FakeModem()
+
+    async def main():
+        svc = make_service()
+        svc.client = FakeClient()
+        svc.NOISE_POLL_S = 0.05            # tests shrink the 5-min cadence
+        task = asyncio.create_task(svc.noise_loop())
+        await asyncio.sleep(0.25)
+        svc.stop()
+        await asyncio.wait_for(task, 2.0)
+        samples = svc.store.noise_samples()
+        assert len(samples) >= 2
+        assert samples[0][1] == -103.5     # a real value
+        assert samples[1][1] is None       # a failed read stays a gap
+    asyncio.run(main())
+
+
+def test_noise_poller_idles_without_modem():
+    async def main():
+        svc = make_service()               # _UnwiredClient: no modem
+        await asyncio.wait_for(svc.noise_loop(), 2.0)   # returns at once
+        assert svc.store.noise_samples() == []
+    asyncio.run(main())

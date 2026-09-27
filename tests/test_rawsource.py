@@ -114,6 +114,36 @@ def test_advert_observation_fields():
     assert obs.origin_ts == 1234567890.0
     assert obs.channel_name is None
     assert obs.path_prefixes == []          # 0 hops
+    # Ch4: the box's own signal facts ride the observation.
+    assert obs.rssi == -77
+    assert obs.snr == 9.5
+
+
+def test_signal_facts_ride_every_observation_kind():
+    """Ch4: RSSI/SNR (as the radio heard them) travel on EVERY
+    observation kind, and a packet with no signal metadata honestly
+    reports None - never a default constant."""
+    src = _source([])
+    # group traffic (the golden vector path)
+    grp = src.handle_packet(RxPacket(
+        data=_frame(0x06, 0, _scope_group_payload()),
+        rssi=-64, snr=12.25))
+    assert grp is not None and grp.channel_name == "#scope"
+    assert grp.rssi == -64
+    assert grp.snr == 12.25
+    # undecodable payload: header-only record still carries signal
+    raw = src.handle_packet(RxPacket(
+        data=_frame(0x06, 0, bytes([0xAA]) + GOLDEN_MAC + GOLDEN_CT),
+        rssi=-91, snr=1.75))
+    assert raw is not None and raw.prefix == 0
+    assert raw.rssi == -91
+    assert raw.snr == 1.75
+    # no signal metadata -> honest None
+    bare = src.handle_packet(RxPacket(
+        data=_frame(0x06, 0, bytes([0xBB]) + GOLDEN_MAC + GOLDEN_CT)))
+    assert bare is not None
+    assert bare.rssi is None
+    assert bare.snr is None
 
 
 def test_reject_capture_logs_once_per_minute(monkeypatch, caplog):

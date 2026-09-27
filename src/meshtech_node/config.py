@@ -152,6 +152,22 @@ class WebServeCfg:
 
 
 @dataclass
+class MqttCfg:
+    """NODE: the MQTT collector (lab plan 2026-09-26, Ch5).
+
+    OFF by default - collection is a lab opt-in. When enabled, the
+    node subscribes to the wide meshcore view on a PUBLIC broker (no
+    broker software here) and records heard-by coverage rows. The
+    node never PUBLISHES: openhop keeps that job."""
+    enabled: bool = False
+    host: str = ""                    # required when enabled (fail loud)
+    port: int = 1883
+    topic: str = "meshcore/#"        # the wide view (all regions)
+    # Ch6: region filter on the wide view - empty = accept every region.
+    regions: List[str] = field(default_factory=list)
+
+
+@dataclass
 class Settings:
     companion_host: str = "127.0.0.1"
     # LoganScope - the dedicated companion radio on the box (2026-09-18,
@@ -174,6 +190,15 @@ class Settings:
     # itself. modem_token_file: the token file for that link.
     modem_token_file: str = ""
     modem_conf: str = ""
+    mqtt: MqttCfg = field(default_factory=MqttCfg)
+    # NODE: WHICH radio hardware (2026-09-26 lab plan, Ch2).
+    # "pimesh" (default) = the PiMesh 1W HAT on this Pi: the node
+    # embeds the radio server in-process (modem_conf).
+    # "ethermesh" = a MeshSmith EtherMesh-1W on the network speaks the
+    # modem protocol on TCP: the node dials companion_host:companion_port
+    # like any other modem (ModemClient), embeds NOTHING, and modem_conf
+    # is ignored. Unknown values fail the config load (fail loud).
+    radio_hardware: str = "pimesh"
     config_path: str = "config.json"
     warnings: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -414,6 +439,34 @@ def load(config_path: str) -> Settings:
     modem_token_file = _text(raw, "modem_token_file", "", errors,
                              "modem_token_file")
     modem_conf = _text(raw, "modem_conf", "", errors, "modem_conf")
+    mqtt_raw = _dict(raw, "mqtt")
+    mqtt_regions_raw = mqtt_raw.get("regions", [])
+    mqtt_regions: List[str] = []
+    if isinstance(mqtt_regions_raw, list):
+        mqtt_regions = [str(r).strip().upper() for r in mqtt_regions_raw
+                        if str(r).strip()]
+    elif mqtt_regions_raw:
+        errors.append("mqtt.regions must be a list of region codes.")
+    mqtt_port = _int(mqtt_raw, "port", 1883, errors, "mqtt.port")
+    if mqtt_port < 1 or mqtt_port > 65535:
+        errors.append("mqtt.port must be between 1 and 65535.")
+    mqtt_cfg = MqttCfg(
+        enabled=bool(mqtt_raw.get("enabled", False)),
+        host=_text(mqtt_raw, "host", "", errors, "mqtt.host"),
+        port=mqtt_port,
+        topic=_text(mqtt_raw, "topic", "meshcore/#", errors,
+                    "mqtt.topic") or "meshcore/#",
+        regions=mqtt_regions,
+    )
+    if mqtt_cfg.enabled and not mqtt_cfg.host:
+        errors.append("mqtt.enabled is set but mqtt.host is empty - "
+                      "name the broker to collect from.")
+    radio_hardware = _text(raw, "radio_hardware", "pimesh", errors,
+                           "radio_hardware").strip().lower()
+    if radio_hardware not in ("pimesh", "ethermesh"):
+        errors.append("radio_hardware must be 'pimesh' (the radio HAT "
+                      f"on this Pi) or 'ethermesh' (found '{radio_hardware}').")
+        radio_hardware = "pimesh"
 
     if errors:
         pretty = "\n".join(f"  - {e}" for e in errors)
@@ -432,6 +485,8 @@ def load(config_path: str) -> Settings:
         webserve=webserve_cfg,
         modem_token_file=modem_token_file,
         modem_conf=modem_conf,
+        mqtt=mqtt_cfg,
+        radio_hardware=radio_hardware,
         config_path=config_path,
         warnings=warnings,
         raw=raw,

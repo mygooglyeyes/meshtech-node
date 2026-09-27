@@ -16,11 +16,24 @@ All integers little-endian. One framing for both directions:
 - **Controller (bot):** the first bytes on the socket are the raw
   token; the modem answers a single byte `0x01` (ok) or `0x00`
   (refused). Constant-time compare, throttled retries.
-- **Observer (repeater feed):** full frames, starting with CMD_AUTH
-  (payload = token). Answer: CMD_AUTH_OK or CMD_ERROR/ERR_UNAUTHORIZED.
+- **Frame clients (observer / repeater):** full frames, starting with
+  CMD_AUTH (payload = token). Answer: CMD_AUTH_OK or
+  CMD_ERROR/ERR_UNAUTHORIZED. The presented token selects the role.
 
-Roles gate commands: observers get RX + status queries only; TX and
-config commands are controller-only (answered ERR_UNAUTHORIZED).
+Roles gate commands:
+
+- observer: RX feed + status queries only; TX/CAD are refused
+  ERR_UNAUTHORIZED.
+- repeater (openhop's driver in a lab repeater): observer commands
+  PLUS TX_REQUEST and CAD_REQUEST - its transmissions run through the
+  same politeness/LBT gate as the controller's. SET_CONFIG /
+  SET_CAD_PARAMS get an echo of the live config, never an apply.
+- controller (bot): everything, and the only role that may change the
+  radio config.
+
+One connection per controller/repeater (a fresh auth displaces the
+stale one). When one token is configured for two roles, the more
+powerful role wins.
 
 ## Host -> modem
 
@@ -32,9 +45,9 @@ config commands are controller-only (answered ERR_UNAUTHORIZED).
 | 0x20 | STATUS_REQ | empty |
 | 0x22 | NOISE_REQ | empty |
 | 0x30 | CAD_REQUEST | empty |
-| 0x31 | RX_START | empty (arm RX; observers auto-arm at auth) |
+| 0x31 | RX_START | empty (arm RX; listeners auto-arm at auth) |
 | 0x34 | SET_CAD_PARAMS | peak u8, min u8 |
-| 0x50 | AUTH | token bytes (observer path) |
+| 0x50 | AUTH | token bytes (observer/repeater path) |
 | 0x70 | GET_VERSION | empty |
 | 0xFF | PING | empty |
 

@@ -1,12 +1,16 @@
 # cleanmodem - standalone LoRa modem process
 
 A clean-room SX1262 modem: one process owns the radio over SPI and
-serves two kinds of TCP clients on one port -
+serves three kinds of TCP clients on one port -
 
 - **observer** - receives a copy of every packet the radio hears
   (the visualization/packet-log feed),
-- **controller** - the bot's exclusive TX path: sends packets to the
-  air and receives the same RX feed.
+- **repeater** - openhop's driver in a lab repeater: the observer feed
+  PLUS TX rights through the same politeness/LBT gate as the
+  controller; radio config stays ours (its SET_CONFIG gets an echo,
+  never an apply),
+- **controller** - the bot's TX path and the only config authority:
+  sends packets to the air and receives the same RX feed.
 
 Written from the SX126x datasheet's command set plus the project's own
 requirements checklist; no code from any other modem project.
@@ -39,6 +43,9 @@ Config keys, pin presets and per-pin overrides are documented in
 - Passwords live in mode-600 token files (first line = password), never
   in the config; a loose file is refused (fail closed).
 - No token file = that role serves nothing. Loopback bind by default.
+- One token file per role; when one token is configured for two roles,
+  the more powerful role wins - so a tenant never shares the
+  controller's token.
 - Unknown commands, oversized frames, and unauthenticated chatter are
   answered once and rate-limited, never allowed to wedge the server.
 - Log lines sanitize peer-controlled text; payload hex stays at DEBUG.

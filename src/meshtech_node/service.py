@@ -884,11 +884,43 @@ class ScopeService:
             except asyncio.TimeoutError:
                 pass
 
+    # NOISE POLL (lab plan 2026-09-26, Ch4): the radio answers
+    # NOISE_REQ honestly, but nothing ever asked - so the box's own
+    # noise floor was invisible (and the old stack's frozen -105 lie
+    # had nowhere to be contradicted). One read every 5 minutes.
+    NOISE_POLL_S = 300.0
+
+    async def noise_loop(self) -> None:
+        """Poll the radio's noise floor every 5 min into the store.
+
+        Failed reads are stored as None - an honest gap in the record,
+        never a plausible constant. No modem link = the loop idles
+        (said out loud at start, then quietly)."""
+        modem = getattr(self.client, "modem", None)
+        if modem is None:
+            log.warning("No modem link - noise polling idles. "
+                        "The gap is honest.")
+            return
+        while not self._stop.is_set():
+            sample = await modem.noise()
+            self.store.add_noise(time.time(), sample)
+            if sample is None:
+                log.warning("noise poll: no value (radio read failed) "
+                            "- recorded as a gap")
+            else:
+                log.info("noise floor: %.1f dBm", sample)
+            try:
+                await asyncio.wait_for(self._stop.wait(),
+                                       timeout=self.NOISE_POLL_S)
+            except asyncio.TimeoutError:
+                pass
+
     async def run(self) -> None:
         tasks = [
             asyncio.create_task(self.client.run(), name="companion"),
             asyncio.create_task(self.ingest_loop(), name="ingest"),
             asyncio.create_task(self.broadcast_loop(), name="broadcast"),
+            asyncio.create_task(self.noise_loop(), name="noise"),
         ]
         log.info("Scope feed running: channel %s, origin %04x, %dx%d grid, "
                  "pulse %.0fs, beacon %.0fs, multi_host=%s, "

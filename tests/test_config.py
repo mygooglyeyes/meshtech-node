@@ -150,3 +150,27 @@ def test_settings_object_direct():
     s = Settings()
     # LoganScope: the dedicated companion radio on the box (5052).
     assert s.companion_port == 5052
+
+
+# ------------------------------------------------- mqtt block (Ch5/Ch6) ----
+
+def test_mqtt_is_off_by_default(tmp_path):
+    s = load(_write(tmp_path, {}))
+    assert s.mqtt.enabled is False          # lab opt-in, never on by default
+    assert s.mqtt.topic == "meshcore/#"     # the wide view
+    assert s.mqtt.regions == []             # Ch6: empty = every region
+
+
+def test_mqtt_enabled_needs_a_host(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"mqtt": {"enabled": True}}))
+    assert "mqtt.host" in str(exc.value)
+
+
+def test_mqtt_regions_normalized_to_uppercase(tmp_path):
+    s = load(_write(tmp_path, {"mqtt": {
+        "enabled": True, "host": "broker.example", "port": 1884,
+        "regions": ["sfo", " LAX "]}}))
+    assert s.mqtt.host == "broker.example"
+    assert s.mqtt.port == 1884
+    assert s.mqtt.regions == ["SFO", "LAX"]
