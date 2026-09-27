@@ -47,24 +47,27 @@ cd ~/meshtech-node && sudo ./manage.sh restart
 
 ### 5. Point openhop's radio at the modem
 
-Edit `/etc/openhop_repeater/config.yaml`:
+Edit `/etc/openhop_repeater/config.yaml` - THREE small changes:
 
-- set `radio_type: pymc_tcp`
-- add a `pymc_tcp:` section (host 127.0.0.1, port 5055, the token)
-- set `mode: forward` (a REAL repeater: forward = repeat on;
-  monitor = hear only; no_tx = everything off)
+- set `radio_type: modem_tcp` (older builds call it `pymc_tcp`;
+  both names work, `modem_tcp` is the modern one)
+- in the EXISTING `modem_tcp:` block (host 127.0.0.1, port 5055),
+  replace the `token:` value with openhop's token from step 2
+- check the `repeater:` section has `mode: forward` (a REAL repeater:
+  forward = repeat on; monitor = hear only; no_tx = everything off)
 
-```yaml
-radio_type: pymc_tcp
-pymc_tcp:
-  host: 127.0.0.1
-  port: 5055
-  token: PASTE-THE-REPEATER-TOKEN-HERE
-mode: forward
+THE LESSON (learned live on hilltop, 2026-09-26): openhop reads the
+`modem_tcp:` block - the one already in the file. A separate
+`pymc_tcp:` block is the OLD spelling and is IGNORED when `modem_tcp`
+exists (the modern key wins), so putting the token there gets it sent
+nowhere. Password in the `modem_tcp:` block, or nothing works.
+
+To pull the token in without typing it, this replaces the token line
+in the modem_tcp block with the secret from step 2:
+
 ```
-
-The old `sx1262:` and `modem_tcp:` blocks may stay; with
-`radio_type: pymc_tcp` they are simply not used.
+sudo bash -c 'sed -i "/^modem_tcp:/,/^  token:/s|^  token:.*|  token: $(cat /opt/meshtech-node/secrets/repeater.token)|" /etc/openhop_repeater/config.yaml'
+```
 
 Then restart openhop:
 
@@ -75,15 +78,14 @@ sudo systemctl restart openhop-repeater
 ### 6. See it working
 
 ```
-cd ~/meshtech-node && sudo ./manage.sh logs
+sudo journalctl -u meshtech-node -n 50 --no-pager | grep -iE "repeater|auth accepted"
 ```
 
-Look for `auth accepted: 127.0.0.1:... as repeater` - that line is
-openhop coming through its own door. openhop's side:
-
-```
-sudo journalctl -u openhop-repeater -n 50 --no-pager
-```
+The proof is `auth accepted: 127.0.0.1:... as repeater` - openhop
+coming through its own door. A healthy link then shows its config
+proposal echoed with the same radio numbers we keep. If instead you
+see `auth rejected`, the password in openhop's `modem_tcp:` block is
+not the one in the secret file (step 5's lesson).
 
 ## IF IT GOES WRONG - close the door
 
@@ -238,7 +240,7 @@ Look for `radio hardware: ethermesh (network modem at THE-BOX-IP:5055)`
 and then `RADIO LINK UP`.
 
 openhop points at the box too: in `/etc/openhop_repeater/config.yaml`
-its `pymc_tcp:` block's `host:` becomes THE-BOX-IP (was
+its `modem_tcp:` block's `host:` becomes THE-BOX-IP (was
 127.0.0.1), then:
 
 ```
