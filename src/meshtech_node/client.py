@@ -43,6 +43,45 @@ _MSG_ACK_TIMEOUT = 0.2
 _NO_ACK_REASONS = frozenset({"no_event_received", "timeout"})
 
 
+def resolve_channel_secret(channel) -> str:
+    """The channel secret TEXT for one config channel - the same string
+    derive_channel_keys takes.
+
+    Priority (config refuses to load both set, so this is never a
+    guess): secret_file's first line (the mode-600 secrets/channel.key
+    pattern, Brett 2026-09-27) > secret_hex > the hashtag rule. The
+    file is re-read here because config validated it but the file can
+    change on disk between load and build; an unreadable file at THIS
+    point is a loud refusal, never a quiet fall-back (honesty rule)."""
+    path = getattr(channel, "secret_file", "")
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                first = handle.readline().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"channel.secret_file {path} unreadable at boot ({exc}) "
+                "- refusing to start with a guessed key") from exc
+        if not first:
+            raise RuntimeError(
+                f"channel.secret_file {path} is empty")
+        try:
+            short = len(bytes.fromhex(first)) < 16
+        except ValueError as exc:
+            raise RuntimeError(
+                f"channel.secret_file {path} does not hold hex text on "
+                "its first line") from exc
+        if short:
+            raise RuntimeError(
+                f"channel.secret_file {path} holds a secret shorter than "
+                "16 bytes (32 hex characters)")
+        return first
+    secret_hex = getattr(channel, "secret_hex", "")
+    if secret_hex:
+        return secret_hex
+    return scope_secret(channel.name).hex()
+
+
 def scope_secret(channel_name: str, secret_hex: str = "") -> bytes:
     """The channel secret: configured hex, or the standard hashtag
     derivation sha256('#name')[:16]."""
@@ -217,7 +256,7 @@ class CompanionClient:
             log.warning("No free companion slot for %s - configure it "
                         "server-side; feed TX disabled until then.", cfg.name)
             return
-        secret = scope_secret(cfg.name, cfg.secret_hex)
+        secret = bytes.fromhex(resolve_channel_secret(cfg))
         ok = await self._try(
             f"set channel {cfg.name} in slot {free}",
             lambda: self.mc.commands.set_channel(free, cfg.name, secret))

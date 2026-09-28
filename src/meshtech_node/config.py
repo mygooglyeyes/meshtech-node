@@ -41,6 +41,13 @@ class ChannelCfg:
     name: str = "#scope"
     # Empty = the standard hashtag derivation sha256("#scope")[:16].
     secret_hex: str = ""
+    # The secret OUT of config.json (Brett, 2026-09-27): a path to a
+    # mode-600 file whose FIRST LINE is the secret as hex text - the
+    # same characters that used to sit in secret_hex (hilltop's
+    # secrets/channel.key). Exactly ONE of secret_file / secret_hex
+    # may be set; both empty = the hashtag rule. Verified at config
+    # load (readable, hex, >= 16 bytes) - fail closed at boot.
+    secret_file: str = ""
     # Companion slot to use (0 = first free slot >= 1).
     companion_slot: int = 0
 
@@ -260,9 +267,27 @@ def load(config_path: str) -> Settings:
                               "16 bytes (32 hex characters).")
         except ValueError:
             errors.append("channel.secret_hex is not valid hex.")
+    secret_file = _text(ch_raw, "secret_file", "", errors,
+                        "channel.secret_file")
+    if secret_hex and secret_file:
+        errors.append("channel.secret_hex and channel.secret_file are BOTH "
+                      "set - name exactly one (the node refuses to guess "
+                      "which key is real).")
+    if secret_file:
+        try:
+            with open(secret_file, "r", encoding="utf-8") as handle:
+                first = handle.readline().strip()
+            if len(bytes.fromhex(first)) < 16:
+                errors.append("channel.secret_file must hold the secret as "
+                              "hex text, at least 16 bytes (32 hex "
+                              "characters) on the first line.")
+        except (OSError, ValueError):
+            errors.append("channel.secret_file is unreadable or does not "
+                          "hold hex text on its first line.")
     channel = ChannelCfg(
         name=name,
         secret_hex=secret_hex,
+        secret_file=secret_file,
         companion_slot=max(0, _int(ch_raw, "companion_slot", 0, errors,
                                    "channel.companion_slot")),
     )

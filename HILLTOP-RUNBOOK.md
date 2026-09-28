@@ -123,6 +123,33 @@ accepted stand-down). Abort at any time = one command (bottom).
     sudo ./manage.sh start | stop | restart | status | logs
     sudo ./manage.sh uninstall   # removes the service; asks before deleting files
 
+## CHANNEL KEY TO A FILE (v00.000.060 - the secret out of config.json)
+
+The channel secret may live in a mode-600 file like the other
+secrets. ONE-time move on the box (the key text moves VERBATIM - the
+radio, the app, and the node must hold the same key; nothing on air
+changes):
+
+    sudo install -m 600 /opt/meshtech-node/channel.key /opt/meshtech-node/secrets/channel.key
+
+Then in /opt/meshtech-node/config.json: add
+`"secret_file": "/opt/meshtech-node/secrets/channel.key"` inside the
+`channel` block and DELETE the `"secret_hex": "..."` line (setting
+both stops the boot with a clear error - the node refuses to guess).
+Verify the file's first line holds the same hex characters that
+secret_hex held (run `sudo head -1 /opt/meshtech-node/secrets/channel.key`).
+
+    sudo /opt/meshtech-node/manage.sh restart
+
+- Config loading FAILS on: a missing/unreadable file, a non-hex or
+  short (< 16 bytes) first line, or both keys set at once. Fail
+closed at boot - never a silent fall-back to the hashtag rule.
+- `secret_hex` in config.json still works (old configs boot
+  unchanged) - the file is the recommended home.
+- Old installs may have no `secrets/` folder yet: `sudo mkdir -p
+  /opt/meshtech-node/secrets && sudo chmod 700 /opt/meshtech-node/secrets`
+  first (the passwords command creates it for the tokens).
+
 ## RADIO TRANSMIT (the txmode toggle - a separate, explicit decision)
 
 TX stays OFF through this whole runbook (listen-only). The one and

@@ -99,6 +99,47 @@ def test_secret_hex_validated(tmp_path):
     assert "secret_hex" in str(exc.value)
 
 
+def _keyfile(tmp_path, text: str) -> str:
+    path = tmp_path / "channel.key"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_secret_file_loads_and_config_carries_path_only(tmp_path):
+    """The secret lives in the file, NEVER in the loaded settings -
+    config carries the path only (the whole point of the knob)."""
+    path = _keyfile(tmp_path, "ab" * 16 + "\n")
+    s = load(_write(tmp_path, {"channel": {"secret_file": path}}))
+    assert s.channel.secret_file == path
+    assert s.channel.secret_hex == ""
+
+
+def test_secret_file_both_set_refused(tmp_path):
+    path = _keyfile(tmp_path, "ab" * 16)
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"channel": {"secret_hex": "ab" * 16,
+                                           "secret_file": path}}))
+    assert "exactly one" in str(exc.value)
+
+
+def test_secret_file_missing_refused(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"channel": {"secret_file":
+                                           str(tmp_path / "nope.key")}}))
+    assert "unreadable" in str(exc.value)
+
+
+def test_secret_file_short_or_nonhex_refused(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"channel": {"secret_file":
+                                           _keyfile(tmp_path, "abcd")}}))
+    assert "secret_file" in str(exc.value)
+    with pytest.raises(ConfigError) as exc:
+        load(_write(tmp_path, {"channel": {"secret_file":
+                                           _keyfile(tmp_path, "zz" * 20)}}))
+    assert "secret_file" in str(exc.value)
+
+
 def test_token_in_config_warns(tmp_path):
     s = load(_write(tmp_path, {"repeater_api": {"token": "nope"}}))
     assert any("IGNORED" in w for w in s.warnings)

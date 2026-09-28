@@ -30,7 +30,7 @@ from aiohttp import web
 
 from . import config as cfgmod
 from . import packets, webserve
-from .client import scope_secret
+from .client import resolve_channel_secret
 from .radiosender import RadioSender
 from .rawsource import RawPacketSource
 from .service import ScopeService
@@ -40,11 +40,13 @@ log = logging.getLogger("meshtech-node")
 
 def _build(settings, *, bench_no_radio: bool) -> tuple:
     """Assemble source, sender, brain, webserve - one wiring, tested."""
-    secret = scope_secret(settings.channel.name,
-                          settings.channel.secret_hex)
+    # resolve_channel_secret: secret_file's first line > secret_hex >
+    # hashtag rule. A named file that fails HERE is a loud RuntimeError
+    # at boot (fail closed, never a silent hashtag fall-back).
+    secret = resolve_channel_secret(settings.channel)
     channel = packets.ChannelKeys.from_secret(
         settings.channel.name,
-        secret.hex())   # derive_channel_keys takes the secret TEXT
+        secret)   # derive_channel_keys takes the secret TEXT
 
     sender: RadioSender = RadioSender(
         None, channel,
