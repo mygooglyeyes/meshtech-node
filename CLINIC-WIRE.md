@@ -168,6 +168,19 @@ node charts (strip, signal stats, hop histogram, 24 h counts),
 trouble flags, peer reports, and route delay min/max columns.
 Boot refills all of them. No raw packets are ever stored.
 
+Removal ages (a clinic fact is kept exactly as long as its evidence
+is fresh):
+
+- node charts: removed ONLY when the node is gone - 30 days without
+  a hear (the node table's own forget law), or forgotten earlier.
+- trouble flags: expire 30 days after their most recent event; the
+  flags of a forgotten node die with it.
+- peer reports: expire 30 days after the peer last said it (inside
+  this wire's minute-age ruler, so an age can always be told
+  honestly); the peer intro reports of a forgotten node die with it.
+- routes: the unchanged 7/14-day laws - a dead route is deleted
+  everywhere and its facts stop appearing.
+
 ## Honesty rules carried forward
 
 - Missing numbers stay missing (sentinels like 0/255 mean "unknown",

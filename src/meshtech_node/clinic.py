@@ -52,9 +52,11 @@ class ClinicIngest:
                           "continues")
 
     def prune(self, now: float) -> int:
-        """The rare-cadence mirror of the node forget law."""
+        """The rare-cadence mirror of the removal ages (CLINIC-WIRE.md):
+        charts die only with their node (30 d), flags expire 30 d
+        after their most recent event. Returns facts dropped."""
         try:
-            return self.charts.prune(now)
+            return self.charts.prune(now) + self.trouble.prune(now)
         except Exception:
             log.exception("clinic prune failed - the books keep the "
                           "truth")
