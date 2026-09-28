@@ -1,6 +1,66 @@
 # meshtech-node - TODOS (order matters, top first)
 
-## SHIPPED + DEPLOYED + PROVEN LIVE (2026-09-26 LATE NIGHT): THE
+## SHIPPED + DEPLOYED + BENCH-HEARD (2026-09-28): THE MESH
+## CLINIC CHAPTER - node v00.000.061 + v00.000.062 (f770c66 +
+## 4d1b794 via PRs #1/#2 on main; hilltop manage.sh update 060 ->
+## 062, service restarted clean 08:59). THE BOX IS A COMPLETE MESH
+## CLINIC ALONE (isolation = full service): per-node charts
+## (availability strip, signal stats, hops, traffic share),
+## per-route facts (usage, direct/multi-hop, delay spread), trouble
+## flags as EVIDENCE never verdicts (sig-fail, timestamps backwards,
+## rate storms, corrupt share never blamed on a sender), and peer
+## boxes' data bursts folded in tagged with which box said it
+## (CLINIC-WIRE.md governs the bytes - written before any were
+## wired). WIRE: TYPE_CLINIC 0x5314, packet <= 163 B, <= 7 records,
+## cursor-rotated batches at the pulse beat; provenance source ==
+## origin = first-hand, else second-hand - never merged. 062:
+## removal ages per the wire page (charts die with their node at
+## 30 d; flags + peer reports expire 30 d after last evidence),
+## forget_node clears every clinic row of the node (peer ROUTE
+## reports stay - they are the route's facts), and proof passes pin
+## the batch cap (unmintable facts refused loudly, never pinned),
+## the peer-table trim, companion mode (hears in, zero TX), the
+## door tap (withheld while the audience is closed; byte-identical
+## once open), and the budget limiter (denied batch never on the
+## air, tap told tx_ok=False, facts deferred). Anti-stomping,
+## request/answer behavior and route death laws untouched; the
+## modem path (modemlink/client/rxshim/radiosender) is byte-
+## untouched 060..062 - openhop's modem stays exactly as it was.
+## Suite 437 passed. APP SIDE: meshtech-app v00.000.032 (461b766)
+## folds + draws it (five views + tap cards); bench 2026-09-28
+## heard clinic facts live (provenance 'first-hand box 2f25').
+## NOTE: 059 (heartbeat allow-list fix, 1acc379) has no chapter of
+## its own - its docs rode along at the time.
+
+## (previous) SHIPPED (2026-09-27): THE SECRET FILE - node
+## v00.000.060 (75b45a4, PUSHED, 394 tests green). The channel
+## secret moves out of config.json into a mode-600 file (new knob
+## channel.secret_file: hex text on the first line - same home as
+## the modem and web tokens; hilltop: secrets/channel.key). Config
+## load refuses a missing/non-hex/short file and refuses BOTH
+## secret_file and secret_hex set (the node never guesses which key
+## is real); the resolver re-checks at build time so a file deleted
+## before boot fails LOUD. secret_hex still works - old configs
+## boot unchanged. Config carries the PATH only, never the key.
+## HILLTOP MIGRATION PROVEN (2026-09-27): key written 600 hex text
+## from the old secret_hex (the cutover-night /opt/channel.key is
+## RAW BINARY and was NOT copied); backup config.json.bak-secretmove;
+## phone round-trip decoded sections ON AIR (a wrong key would
+## decode nothing).
+
+## (previous) SHIPPED (2026-09-27): THE HEARTBEAT COOLDOWN FIX -
+## node v00.000.059 (1acc379, PUSHED, 384 tests green; Brett's
+## 'commit and push the fix'). The heartbeat check ran through the
+## FULL refresh rationing, so the cooldown a map answer started
+## threw away the very keep-alives proving the app was still
+## listening - five silent minutes, the gate closed, the node went
+## quiet with the app open. Fix: budget.py gains prefix_allowed()
+## (allow-list ONLY - no cooldown, no cap; a heartbeat asks for
+## nothing so it can never spend airtime budget) and the heartbeat
+## handler uses it. The boundary holds: a stranger's keep-alive
+## still counts for nothing.
+
+## (previous) SHIPPED + DEPLOYED + PROVEN LIVE (2026-09-26 LATE NIGHT): THE
 ## AUDIENCE GATE v00.000.058 (191d13b pushed, hilltop updated 056 ->
 ## 058). The node's OWN cadence (LAYOUT/PULSE/SECT_SUM/beacon) flies
 ## only while an over-the-air app sign - a HEARTBEAT (new 8-byte type
