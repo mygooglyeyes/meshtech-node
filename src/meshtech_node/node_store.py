@@ -142,6 +142,72 @@ _MIGRATIONS: List[tuple] = [
         """,
         "CREATE INDEX IF NOT EXISTS idx_heard_by_last_heard ON heard_by(last_heard)",
     ]),
+    # MESH CLINIC (2026-09-27, CLINIC-WIRE.md): the clinic's stores.
+    # Node charts (availability strip, signal stats, hop histogram,
+    # 24 h counts), trouble flags (evidence rows, never verdicts),
+    # peer reports (what another box SAID, tagged with its origin),
+    # and the route delay spread (min/max beside the stored median -
+    # lifetime facts, honest non-negative samples only). All
+    # write-through like the node table; boot refills every one. No
+    # raw packets are ever stored (scope rule).
+    (5, [
+        "ALTER TABLE routes ADD COLUMN delay_min_s INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE routes ADD COLUMN delay_max_s INTEGER NOT NULL DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS clinic_nodes (
+            prefix        INTEGER PRIMARY KEY,  -- node key (first pubkey byte)
+            first_heard   REAL NOT NULL,
+            last_heard    REAL NOT NULL,
+            anchor_hour   INTEGER NOT NULL,     -- newest strip slot (epoch hour)
+            buckets       BLOB NOT NULL,        -- 24 x uint32 LE hourly hears
+            hops          BLOB NOT NULL,        -- 16 x uint32 LE hop histogram
+            rssi_n        INTEGER NOT NULL DEFAULT 0,
+            rssi_ewma     REAL NOT NULL DEFAULT 0,
+            rssi_best     REAL,                 -- NULL = honestly no reading
+            rssi_worst    REAL,
+            rssi_mean     REAL NOT NULL DEFAULT 0,
+            rssi_m2       REAL NOT NULL DEFAULT 0,
+            snr_n         INTEGER NOT NULL DEFAULT 0,
+            snr_ewma      REAL NOT NULL DEFAULT 0,
+            snr_best      REAL,
+            snr_worst     REAL,
+            snr_mean      REAL NOT NULL DEFAULT 0,
+            snr_m2        REAL NOT NULL DEFAULT 0
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_clinic_nodes_last ON clinic_nodes(last_heard)",
+        """
+        CREATE TABLE IF NOT EXISTS clinic_flags (
+            kind          INTEGER NOT NULL,   -- 1 sig-fail 2 ts-back 3 storm 4 corrupt
+            subject       INTEGER NOT NULL,   -- key prefix; 0 = mesh-wide (corrupt)
+            events        INTEGER NOT NULL DEFAULT 0,
+            first         REAL NOT NULL,
+            last          REAL NOT NULL,
+            detail        INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (kind, subject)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS peer_reports (
+            source        INTEGER NOT NULL,   -- the peer box that said it
+            report        INTEGER NOT NULL,   -- 1 pulse 2 sect_sum 3 route 4 intro
+            subject       INTEGER NOT NULL,
+            path_hex      TEXT NOT NULL DEFAULT '',
+            first         REAL NOT NULL,
+            last          REAL NOT NULL,
+            v1            INTEGER NOT NULL DEFAULT 0,
+            v2            INTEGER NOT NULL DEFAULT 0,
+            v3            INTEGER NOT NULL DEFAULT 0,
+            v4            INTEGER NOT NULL DEFAULT 0,
+            cls           INTEGER NOT NULL DEFAULT 0,
+            lat           REAL,               -- NULL = peer reported no position
+            lon           REAL,
+            name          TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source, report, subject, path_hex)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_peer_reports_last ON peer_reports(last)",
+    ]),
 ]
 
 
@@ -286,10 +352,16 @@ class NodeStore:
     def forget_node(self, prefix: int) -> int:
         """Delete ONE node row (the RAM name-supersede's disk mirror:
         the retired identity must not resurrect at the next boot
-        refill). Returns rows deleted (0 = nothing to forget)."""
+        refill). MESH CLINIC: the node's chart and its trouble flags
+        die with it - charts are removed only when the node is dead or
+        gone, never earlier. Returns rows deleted (0 = nothing)."""
         with self._conn:
             cur = self._conn.execute(
                 "DELETE FROM nodes WHERE prefix = ?", (int(prefix),))
+            self._conn.execute(
+                "DELETE FROM clinic_nodes WHERE prefix = ?", (int(prefix),))
+            self._conn.execute(
+                "DELETE FROM clinic_flags WHERE subject = ?", (int(prefix),))
         self.remember_gone(prefix)
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
@@ -405,6 +477,7 @@ class NodeStore:
                      last_heard: float, packet_count: int,
                      delay_med_s: int, sender_prefix: int = 0,
                      is_direct: bool = False, section_id: int = -1,
+                     delay_min_s: int = 0, delay_max_s: int = 0,
                      ts: Optional[float] = None) -> None:
         """Write one route use (called from the RAM store's
         write-through at every hearing). count/delay/last-heard are
@@ -422,8 +495,9 @@ class NodeStore:
                 """
                 INSERT INTO routes (path_hex, sender_prefix, is_direct,
                                     section_id, first_heard, last_heard,
-                                    packet_count, delay_med_s)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    packet_count, delay_med_s,
+                                    delay_min_s, delay_max_s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path_hex) DO UPDATE SET
                     sender_prefix = excluded.sender_prefix,
                     is_direct     = excluded.is_direct,
@@ -431,11 +505,14 @@ class NodeStore:
                     last_heard    = excluded.last_heard,
                     packet_count  = excluded.packet_count,
                     delay_med_s   = excluded.delay_med_s,
+                    delay_min_s   = excluded.delay_min_s,
+                    delay_max_s   = excluded.delay_max_s,
                     first_heard   = MIN(routes.first_heard, excluded.first_heard)
                 """,
                 (path_bytes.hex(), int(sender_prefix), 1 if is_direct else 0,
                  int(section_id), float(first_heard), float(last_heard),
-                 int(packet_count), int(delay_med_s)),
+                 int(packet_count), int(delay_med_s), int(delay_min_s),
+                 int(delay_max_s)),
             )
 
     def route_rows(self) -> List[Dict[str, object]]:
@@ -457,6 +534,109 @@ class NodeStore:
                 [(p.hex(),) for p in path_hex_list])
         total = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
         return total
+
+    # ------------------------------------------------------ mesh clinic
+
+    def upsert_clinic_node(self, row: Dict[str, object]) -> None:
+        """Write one node chart row (write-through at every hear; the
+        row carries the chart's full state - REPLACE is the truth)."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO clinic_nodes (
+                    prefix, first_heard, last_heard, anchor_hour,
+                    buckets, hops, rssi_n, rssi_ewma, rssi_best,
+                    rssi_worst, rssi_mean, rssi_m2, snr_n, snr_ewma,
+                    snr_best, snr_worst, snr_mean, snr_m2)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (int(row["prefix"]), float(row["first_heard"]),
+                 float(row["last_heard"]), int(row["anchor_hour"]),
+                 bytes(row["buckets"]), bytes(row["hops"]),
+                 int(row.get("rssi_n") or 0),
+                 float(row.get("rssi_ewma") or 0.0),
+                 row.get("rssi_best"), row.get("rssi_worst"),
+                 float(row.get("rssi_mean") or 0.0),
+                 float(row.get("rssi_m2") or 0.0),
+                 int(row.get("snr_n") or 0),
+                 float(row.get("snr_ewma") or 0.0),
+                 row.get("snr_best"), row.get("snr_worst"),
+                 float(row.get("snr_mean") or 0.0),
+                 float(row.get("snr_m2") or 0.0)),
+            )
+
+    def clinic_node_rows(self) -> List[Dict[str, object]]:
+        rows = self._conn.execute("SELECT * FROM clinic_nodes").fetchall()
+        return [dict(r) for r in rows]
+
+    def forget_clinic_nodes_before(self, cutoff_ts: float) -> int:
+        """Charts die only with their node (30 d silent = gone, the
+        node forget law mirrored). Returns rows deleted."""
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM clinic_nodes WHERE last_heard < ?",
+                (float(cutoff_ts),))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    def upsert_clinic_flag(self, row: Dict[str, object]) -> None:
+        """Write one trouble-flag row (evidence, never a verdict)."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO clinic_flags
+                    (kind, subject, events, first, last, detail)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (int(row["kind"]), int(row["subject"]),
+                 int(row["events"]), float(row["first"]),
+                 float(row["last"]), int(row["detail"])),
+            )
+
+    def clinic_flag_rows(self) -> List[Dict[str, object]]:
+        rows = self._conn.execute("SELECT * FROM clinic_flags").fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_peer_report(self, row: Dict[str, object]) -> None:
+        """Write one peer report (what another box SAID, tagged with
+        which box said it). Values ride as v1..v4 - report-shaped
+        facts, never raw packets."""
+        values = tuple(int(v) for v in row.get("values") or (0, 0, 0, 0))
+        values = (values + (0, 0, 0, 0))[:4]
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO peer_reports
+                    (source, report, subject, path_hex, first, last,
+                     v1, v2, v3, v4, cls, lat, lon, name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (int(row["source"]), int(row["report"]),
+                 int(row["subject"]), str(row.get("path_hex") or ""),
+                 float(row["first"]), float(row["last"]),
+                 values[0], values[1], values[2], values[3],
+                 int(row.get("cls") or 0), row.get("lat"),
+                 row.get("lon"), str(row.get("name") or "")),
+            )
+
+    def peer_report_rows(self) -> List[Dict[str, object]]:
+        rows = self._conn.execute("SELECT * FROM peer_reports").fetchall()
+        out: List[Dict[str, object]] = []
+        for r in rows:
+            d = dict(r)
+            d["values"] = (int(d.get("v1") or 0), int(d.get("v2") or 0),
+                           int(d.get("v3") or 0), int(d.get("v4") or 0))
+            out.append(d)
+        return out
+
+    def trim_peer_reports(self, max_rows: int) -> int:
+        """Size cap, oldest out first (bounded like every table here -
+        a fade law for peer words is Brett's call, not a guess)."""
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM peer_reports WHERE rowid IN ("
+                "SELECT rowid FROM peer_reports ORDER BY last "
+                "DESC LIMIT -1 OFFSET ?)", (int(max_rows),))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     # ----------------------------------------------------------- heard-by
 

@@ -83,10 +83,61 @@ class FeedBuilder:
         # the first cadence pulse raised CodecError inside the loop.
         self._background_section = 1
         self._intro_cursor = 0
+        # MESH CLINIC (CLINIC-WIRE.md): the cursor walk over this
+        # box's facts - every batch carries the NEXT slice so all
+        # facts cycle. _clinic_unwireable remembers facts the wire
+        # refused so the warning logs once, not every beat.
+        self._clinic_cursor = 0
+        self._clinic_unwireable: set = set()
 
     def _next_seq(self) -> int:
         self.seq = (self.seq + 1) & 0xFFFF
         return self.seq
+
+    # ------------------------------------------------------ clinic batches
+
+    def build_clinic_batch(self, clinic: object, peers: object, *,
+                           now: Optional[float] = None) -> Optional[OutPacket]:
+        """One CLINIC batch per pulse beat (the wire page's emission
+        rules): the NEXT cursor slice of this box's facts -
+        first-hand clinic records plus second-hand peer reports
+        (tagged with which box said it). At most 7 records and within
+        the 163 B channel cap; a fact the wire cannot carry is
+        refused LOUDLY and never pinned. None = nothing to say."""
+        now = time.time() if now is None else now
+        records = list(clinic.records(self.store, now)) \
+            + list(peers.records(now))
+        if not records:
+            self._clinic_cursor = 0
+            return None
+        records.sort(key=codec.clinic_sort_key)
+        start = self._clinic_cursor % len(records)
+        ordered = records[start:] + records[:start]
+        chunk: List[object] = []
+        used = 9            # envelope(3) + header(5) + count(1)
+        for record in ordered:
+            if len(chunk) >= codec.CLINIC_MAX_RECORDS:
+                break
+            try:
+                wire = codec.encode_clinic_record(record)
+            except codec.CodecError as exc:
+                key = codec.clinic_sort_key(record)
+                if key not in self._clinic_unwireable:
+                    self._clinic_unwireable.add(key)
+                    log.warning("clinic fact NOT minted (the wire "
+                                "cannot carry it - never pinned): %s",
+                                exc)
+                continue
+            if used + len(wire) > codec.MAX_CHANNEL_DATA:
+                break
+            chunk.append(record)
+            used += len(wire)
+        if not chunk:
+            return None
+        self._clinic_cursor = (start + len(chunk)) % len(records)
+        payload = codec.encode_clinic(chunk, seq=self._next_seq(),
+                                      origin=self.origin)
+        return OutPacket(codec.TYPE_CLINIC, payload, "clinic")
 
     # ------------------------------------------------------------ aggregations
 

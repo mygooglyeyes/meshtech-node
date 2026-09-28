@@ -44,6 +44,26 @@ def main() -> int:
     refresh = codec.encode_refresh_req(codec.RefreshReq(
         seq=2, kind=codec.REFRESH_KIND_ROUTE, target=0xBEEF, nonce=0x1234,
         origin=0x0042, host=0xB17E))
+    # CLINIC (CLINIC-WIRE.md): one batch carrying all four record
+    # kinds - node fact, route fact, trouble flag, peer report. The
+    # peer record's source (0xBEEF) differs from the packet origin on
+    # purpose: second-hand provenance rides the golden bytes too.
+    clinic = codec.encode_clinic([
+        codec.ClinicNodeFact(source=0xB17E, prefix=0x21, last_age_min=3,
+                             age_days=5, strip=0x800007, hops_typ=2,
+                             share_pct=37, snr_ewma=20, snr_best=36,
+                             snr_worst=4, snr_sd=16, rssi_ewma=-90,
+                             rssi_best=-80, rssi_worst=-100, rssi_sd=10),
+        codec.ClinicRouteFact(source=0xB17E, path=(0x11, 0x22), uses=56,
+                              direct=0, delay_min_s=2, delay_med_s=4,
+                              delay_max_s=9, last_age_min=17, age_days=2),
+        codec.ClinicFlagFact(source=0xB17E, flag=codec.FLAG_TS_BACKWARDS,
+                             subject=0x21, events=2, first_age_min=30,
+                             last_age_min=5, detail=500),
+        codec.ClinicPeerFact(source=0xBEEF, report=codec.REPORT_PULSE,
+                             subject=0, heard_age_min=4,
+                             values=(1234, 4, 40, 9)),
+    ], seq=0x0113, origin=0xB17E)
 
     vectors = {
         "pulse": pulse.hex(),
@@ -52,6 +72,7 @@ def main() -> int:
         "layout": layout.hex(),
         "intro": intro.hex(),
         "refresh": refresh.hex(),
+        "clinic": clinic.hex(),
     }
     out_json = Path(__file__).resolve().parent.parent / "tests" / \
         "golden_vectors.json"

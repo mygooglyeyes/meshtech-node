@@ -74,6 +74,12 @@ TYPE_GONE = 0x5312
 # stale, nothing to misread. Its ARRIVAL is the whole message: a live
 # app is on the air listening.
 TYPE_HEARTBEAT = 0x5313
+# CLINIC (0x5314, Mesh Clinic v2 Phase 1, CLINIC-WIRE.md): the mesh
+# clinic's facts + provenance - a stream of small RECORDS (node facts,
+# route facts, trouble flags, peer reports). ONE type for the whole
+# health layer; every record carries `source` = the box that measured
+# or reported it (first-hand vs second-hand rides the bytes).
+TYPE_CLINIC = 0x5314
 
 TYPE_NAMES = {
     TYPE_PULSE: "PULSE",
@@ -85,6 +91,7 @@ TYPE_NAMES = {
     TYPE_REFRESH_REQ: "REFRESH_REQ",
     TYPE_GONE: "GONE",
     TYPE_HEARTBEAT: "HEARTBEAT",
+    TYPE_CLINIC: "CLINIC",
 }
 
 # CMD_SEND_CHANNEL_DATA payload budget (openhop_core constants.py:
@@ -740,6 +747,400 @@ def decode_gone(payload: bytes) -> Gone:
 
 
 # --------------------------------------------------------------------------
+# CLINIC (0x5314) - the mesh clinic's facts + provenance
+# (CLINIC-WIRE.md governs these bytes; it was written BEFORE any of
+# them were wired.)
+#
+# body = header(5) + count(1) + records; each record is
+# kind(1) + len(1) + payload(len). The WHOLE plaintext stays within
+# MAX_CHANNEL_DATA (163 B) so at most CLINIC_MAX_RECORDS ride at once.
+# --------------------------------------------------------------------------
+
+CLINIC_MAX_RECORDS = 7
+CLINIC_MAX_NAME = 24          # peer intro names this wire can carry
+
+CLINIC_KIND_NODE = 1
+CLINIC_KIND_ROUTE = 2
+CLINIC_KIND_FLAG = 3
+CLINIC_KIND_PEER = 4
+
+# Trouble flags (kind 3) - FACTS with evidence, never verdicts.
+FLAG_SIG_FAIL = 1
+FLAG_TS_BACKWARDS = 2
+FLAG_RATE_STORM = 3
+FLAG_CORRUPT_SHARE = 4
+
+# Peer reports (kind 4) - what another box SAID (second-hand).
+REPORT_PULSE = 1
+REPORT_SECT_SUM = 2
+REPORT_ROUTE = 3
+REPORT_INTRO = 4
+
+# Wire sentinels: missing stays missing, never a plausible constant.
+AGE_UNKNOWN_MIN = 0xFFFF      # minute fields: older than the wire says
+SHARE_UNKNOWN_PCT = 255       # node fact: no identified traffic counted
+SIGNAL_UNKNOWN = -128         # i8 signal stats: no samples (radio never
+                              # reports -128 dBm / -32 dB - not receivable)
+SIGNAL_SD_UNKNOWN = 255       # u8 signal spread: fewer than 2 samples
+
+
+@dataclass
+class ClinicNodeFact:
+    """Kind 1: one node's chart as THIS box heard it (20 B payload)."""
+    source: int
+    prefix: int
+    last_age_min: int
+    age_days: int
+    strip: int                 # 24-bit: bit 0 oldest hour ... bit 23 now
+    hops_typ: int              # typical radio hops (0 = unknown)
+    share_pct: int             # of identified traffic, 24 h (255 = none)
+    snr_ewma: int = SIGNAL_UNKNOWN
+    snr_best: int = SIGNAL_UNKNOWN
+    snr_worst: int = SIGNAL_UNKNOWN
+    snr_sd: int = SIGNAL_SD_UNKNOWN
+    rssi_ewma: int = SIGNAL_UNKNOWN
+    rssi_best: int = SIGNAL_UNKNOWN
+    rssi_worst: int = SIGNAL_UNKNOWN
+    rssi_sd: int = SIGNAL_SD_UNKNOWN
+
+
+@dataclass
+class ClinicRouteFact:
+    """Kind 2: one route's chart (delay 0 = unknown, honest stamps only)."""
+    source: int
+    path: Tuple[int, ...]      # repeater trail, travel order (1..8)
+    uses: int
+    direct: int                # 1 = heard straight from the sender
+    delay_min_s: int
+    delay_med_s: int
+    delay_max_s: int
+    last_age_min: int
+    age_days: int
+
+
+@dataclass
+class ClinicFlagFact:
+    """Kind 3: one trouble flag - what was measured, not a verdict."""
+    source: int
+    flag: int                  # FLAG_*
+    subject: int               # key prefix; 0 = mesh-wide (corrupt share)
+    events: int
+    first_age_min: int
+    last_age_min: int
+    detail: int                # worst jump s / peak packets-per-min / per-mille
+
+
+@dataclass
+class ClinicPeerFact:
+    """Kind 4: what a peer box said (source = the peer, never us)."""
+    source: int
+    report: int                # REPORT_*
+    subject: int               # 0 / section id / route id / node prefix
+    heard_age_min: int
+    values: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    path: Tuple[int, ...] = ()
+    cls: int = 0
+    lat: Optional[float] = None   # None = the peer reported no position
+    lon: Optional[float] = None
+    name: str = ""
+
+
+@dataclass
+class Clinic:
+    seq: int
+    origin: int
+    records: List[object] = field(default_factory=list)
+
+
+def _i8(value: int, what: str) -> int:
+    value = int(value)
+    if not -128 <= value <= 127:
+        raise CodecError(f"{what} out of range: {value}")
+    return value
+
+
+def _age_minutes(seconds: float) -> int:
+    """Minutes since, on the wire: capped at AGE_UNKNOWN_MIN (never a
+    wrapped-around small number pretending to be fresh)."""
+    minutes = int(seconds // 60)
+    if minutes < 0:
+        return 0
+    return AGE_UNKNOWN_MIN if minutes > AGE_UNKNOWN_MIN else minutes
+
+
+def clinic_sort_key(record: object) -> tuple:
+    """Deterministic fact order - the cursor walk stays stable across
+    batches so every fact cycles through the rotating slice."""
+    if isinstance(record, ClinicNodeFact):
+        return (CLINIC_KIND_NODE, record.prefix, record.source, ())
+    if isinstance(record, ClinicRouteFact):
+        return (CLINIC_KIND_ROUTE, 0, record.source, tuple(record.path))
+    if isinstance(record, ClinicFlagFact):
+        return (CLINIC_KIND_FLAG, record.flag, record.source,
+                (record.subject,))
+    if isinstance(record, ClinicPeerFact):
+        return (CLINIC_KIND_PEER, record.report, record.source,
+                (record.subject,))
+    raise CodecError(f"unknown clinic record {type(record).__name__}")
+
+
+def encode_clinic_record(record: object) -> bytes:
+    """One record: kind(1) + len(1) + payload. Raises loudly when the
+    wire cannot carry the truth (never pins, never fabricates)."""
+    if isinstance(record, ClinicNodeFact):
+        strip = int(record.strip)
+        if not 0 <= strip <= 0xFFFFFF:
+            raise CodecError(f"node strip out of range: {strip}")
+        payload = struct.pack(
+            "<HB",
+            _u16(record.source, "node source"),
+            _u8(record.prefix, "node prefix"),
+        )
+        payload += struct.pack(
+            "<HH",
+            _u16(record.last_age_min, "node last_age_min"),
+            _u16(record.age_days, "node age_days"),
+        )
+        payload += strip.to_bytes(3, "little")
+        payload += struct.pack(
+            "<BB",
+            _u8(record.hops_typ, "node hops_typ"),
+            _u8(record.share_pct, "node share_pct"),
+        )
+        payload += struct.pack(
+            "<bbbB",
+            _i8(record.snr_ewma, "snr_ewma"),
+            _i8(record.snr_best, "snr_best"),
+            _i8(record.snr_worst, "snr_worst"),
+            _u8(record.snr_sd, "snr_sd"),
+        )
+        payload += struct.pack(
+            "<bbbB",
+            _i8(record.rssi_ewma, "rssi_ewma"),
+            _i8(record.rssi_best, "rssi_best"),
+            _i8(record.rssi_worst, "rssi_worst"),
+            _u8(record.rssi_sd, "rssi_sd"),
+        )
+    elif isinstance(record, ClinicRouteFact):
+        path = tuple(record.path)
+        if not 1 <= len(path) <= 8:
+            raise CodecError(f"route fact path length {len(path)} "
+                             "outside 1..8")
+        payload = struct.pack("<H", _u16(record.source, "route source"))
+        payload += struct.pack("<B", len(path))
+        payload += bytes(_u8(p, "route path byte") for p in path)
+        payload += struct.pack(
+            "<HBHHHH",
+            _u16(record.uses, "route uses"),
+            _u8(record.direct, "route direct"),
+            _u16(record.delay_min_s, "route delay_min_s"),
+            _u16(record.delay_med_s, "route delay_med_s"),
+            _u16(record.delay_max_s, "route delay_max_s"),
+            _u16(record.last_age_min, "route last_age_min"),
+        )
+        payload += struct.pack("<H", _u16(record.age_days, "route age_days"))
+    elif isinstance(record, ClinicFlagFact):
+        payload = struct.pack(
+            "<HBBHHHH",
+            _u16(record.source, "flag source"),
+            _u8(record.flag, "flag kind"),
+            _u8(record.subject, "flag subject"),
+            _u16(record.events, "flag events"),
+            _u16(record.first_age_min, "flag first_age_min"),
+            _u16(record.last_age_min, "flag last_age_min"),
+            _u16(record.detail, "flag detail"),
+        )
+    elif isinstance(record, ClinicPeerFact):
+        payload = struct.pack(
+            "<HBHH",
+            _u16(record.source, "peer source"),
+            _u8(record.report, "peer report"),
+            _u16(record.subject, "peer subject"),
+            _u16(record.heard_age_min, "peer heard_age_min"),
+        )
+        v1, v2, v3, v4 = (int(v) for v in record.values)
+        if record.report in (REPORT_PULSE, REPORT_SECT_SUM):
+            payload += struct.pack("<HHHH", _u16(v1, "peer v1"),
+                                   _u16(v2, "peer v2"), _u16(v3, "peer v3"),
+                                   _u16(v4, "peer v4"))
+        elif record.report == REPORT_ROUTE:
+            path = tuple(record.path)
+            if not 1 <= len(path) <= 8:
+                raise CodecError(f"peer route path length {len(path)} "
+                                 "outside 1..8")
+            payload += struct.pack("<HHH", _u16(v1, "peer uses"),
+                                   _u16(v2, "peer delay_med"),
+                                   _u16(v3, "peer last_age"))
+            payload += struct.pack("<B", len(path))
+            payload += bytes(_u8(p, "peer path byte") for p in path)
+        elif record.report == REPORT_INTRO:
+            name_bytes = (record.name or "").encode("utf-8")
+            if len(name_bytes) > CLINIC_MAX_NAME:
+                raise CodecError(
+                    f"peer intro name longer than {CLINIC_MAX_NAME} B "
+                    "- refuse to mint, never truncate a name")
+            lat_e7 = 0 if record.lat is None else int(round(record.lat * 1e7))
+            lon_e7 = 0 if record.lon is None else int(round(record.lon * 1e7))
+            # 0/0 = NO POSITION (the node table's own null-island rule).
+            if not -(2 ** 31) <= lat_e7 <= 2 ** 31 - 1 \
+                    or not -(2 ** 31) <= lon_e7 <= 2 ** 31 - 1:
+                raise CodecError("peer intro position out of e7 range")
+            payload += struct.pack("<BiiB", _u8(record.cls, "peer class"),
+                                   lat_e7, lon_e7, len(name_bytes))
+            payload += name_bytes
+        else:
+            raise CodecError(f"unknown peer report kind {record.report}")
+    else:
+        raise CodecError(f"unknown clinic record {type(record).__name__}")
+    if len(payload) > 255:
+        raise CodecError(f"clinic record too long: {len(payload)} B")
+    return struct.pack("<BB", _clinic_kind(record), len(payload)) + payload
+
+
+def _clinic_kind(record: object) -> int:
+    if isinstance(record, ClinicNodeFact):
+        return CLINIC_KIND_NODE
+    if isinstance(record, ClinicRouteFact):
+        return CLINIC_KIND_ROUTE
+    if isinstance(record, ClinicFlagFact):
+        return CLINIC_KIND_FLAG
+    if isinstance(record, ClinicPeerFact):
+        return CLINIC_KIND_PEER
+    raise CodecError(f"unknown clinic record {type(record).__name__}")
+
+
+def _decode_clinic_record(payload: bytes, off: int) -> Tuple[object, int]:
+    if len(payload) < off + 2:
+        raise CodecError("CLINIC record truncated (kind/len)")
+    kind = payload[off]
+    length = payload[off + 1]
+    off += 2
+    if len(payload) < off + length:
+        raise CodecError("CLINIC record truncated (payload)")
+    body = payload[off:off + length]
+    off += length
+    if kind == CLINIC_KIND_NODE:
+        if len(body) != 20:
+            raise CodecError(f"CLINIC node fact must be 20 B, got {len(body)}")
+        source = struct.unpack_from("<H", body, 0)[0]
+        prefix = body[2]
+        last_age, age_days = struct.unpack_from("<HH", body, 3)
+        strip = int.from_bytes(body[7:10], "little")
+        hops, share = body[10], body[11]
+        snr_e, snr_b, snr_w = struct.unpack_from("<bbb", body, 12)
+        snr_sd = body[15]
+        rssi_e, rssi_b, rssi_w = struct.unpack_from("<bbb", body, 16)
+        rssi_sd = body[19]
+        return ClinicNodeFact(
+            source=source, prefix=prefix, last_age_min=last_age,
+            age_days=age_days, strip=strip, hops_typ=hops, share_pct=share,
+            snr_ewma=snr_e, snr_best=snr_b, snr_worst=snr_w, snr_sd=snr_sd,
+            rssi_ewma=rssi_e, rssi_best=rssi_b, rssi_worst=rssi_w,
+            rssi_sd=rssi_sd), off
+    if kind == CLINIC_KIND_ROUTE:
+        if len(body) < 3:
+            raise CodecError("CLINIC route fact too short")
+        source = struct.unpack_from("<H", body, 0)[0]
+        path_len = body[2]
+        if not 1 <= path_len <= 8 or len(body) != 3 + path_len + 13:
+            raise CodecError("CLINIC route fact malformed")
+        path = tuple(body[3:3 + path_len])
+        uses, direct, dmin, dmed, dmax, last_age = struct.unpack_from(
+            "<HBHHHH", body, 3 + path_len)
+        age_days = struct.unpack_from("<H", body, 3 + path_len + 11)[0]
+        return ClinicRouteFact(
+            source=source, path=path, uses=uses, direct=direct,
+            delay_min_s=dmin, delay_med_s=dmed, delay_max_s=dmax,
+            last_age_min=last_age, age_days=age_days), off
+    if kind == CLINIC_KIND_FLAG:
+        if len(body) != 12:
+            raise CodecError(f"CLINIC flag must be 12 B, got {len(body)}")
+        (source, flag, subject, events, first_age, last_age,
+         detail) = struct.unpack("<HBBHHHH", body)
+        return ClinicFlagFact(
+            source=source, flag=flag, subject=subject, events=events,
+            first_age_min=first_age, last_age_min=last_age,
+            detail=detail), off
+    if kind == CLINIC_KIND_PEER:
+        if len(body) < 7:
+            raise CodecError("CLINIC peer report too short")
+        source, report, subject, heard_age = struct.unpack_from(
+            "<HBHH", body, 0)
+        rest = body[7:]
+        values = (0, 0, 0, 0)
+        path: Tuple[int, ...] = ()
+        cls = 0
+        lat = lon = None
+        name = ""
+        if report in (REPORT_PULSE, REPORT_SECT_SUM):
+            if len(rest) != 8:
+                raise CodecError("CLINIC peer numbers must be 8 B")
+            values = struct.unpack("<HHHH", rest)
+        elif report == REPORT_ROUTE:
+            if len(rest) < 7:
+                raise CodecError("CLINIC peer route too short")
+            v1, v2, v3 = struct.unpack_from("<HHH", rest, 0)
+            path_len = rest[6]
+            if not 1 <= path_len <= 8 or len(rest) != 7 + path_len:
+                raise CodecError("CLINIC peer route malformed")
+            values = (v1, v2, v3, 0)
+            path = tuple(rest[7:7 + path_len])
+        elif report == REPORT_INTRO:
+            if len(rest) < 10:
+                raise CodecError("CLINIC peer intro too short")
+            cls, lat_e7, lon_e7, name_len = struct.unpack_from("<BiiB", rest, 0)
+            if len(rest) != 10 + name_len:
+                raise CodecError("CLINIC peer intro name malformed")
+            if name_len:
+                try:
+                    name = rest[10:10 + name_len].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise CodecError(f"CLINIC peer name not UTF-8: {exc}")
+            # 0/0 = the peer reported NO position (null-island rule).
+            lat = None if lat_e7 == 0 and lon_e7 == 0 else lat_e7 / 1e7
+            lon = None if lat is None else lon_e7 / 1e7
+        else:
+            raise CodecError(f"unknown peer report kind {report}")
+        return ClinicPeerFact(
+            source=source, report=report, subject=subject,
+            heard_age_min=heard_age, values=values, path=path, cls=cls,
+            lat=lat, lon=lon, name=name), off
+    raise CodecError(f"unknown CLINIC record kind {kind}")
+
+
+def encode_clinic(records: List[object], *, seq: int,
+                  origin: int = 0) -> bytes:
+    """Full CLINIC plaintext (with envelope). Hard caps from the wire
+    page: at most 7 records, whole plaintext <= MAX_CHANNEL_DATA."""
+    if len(records) > CLINIC_MAX_RECORDS:
+        raise CodecError(f"too many clinic records: {len(records)} > "
+                         f"{CLINIC_MAX_RECORDS}")
+    body = pack_header(seq, origin)
+    body += struct.pack("<B", len(records))
+    for record in records:
+        body += encode_clinic_record(record)
+    plaintext = data_type_bytes(TYPE_CLINIC, body)
+    if len(plaintext) > MAX_CHANNEL_DATA:
+        raise CodecError(f"clinic packet {len(plaintext)} B exceeds "
+                         f"the {MAX_CHANNEL_DATA} B channel cap")
+    return plaintext
+
+
+def decode_clinic(payload: bytes) -> Clinic:
+    """Decode a CLINIC body (envelope already stripped)."""
+    header, off = unpack_header(payload)
+    if len(payload) < off + 1:
+        raise CodecError("CLINIC too short (count)")
+    count = payload[off]
+    off += 1
+    records: List[object] = []
+    for _ in range(count):
+        record, off = _decode_clinic_record(payload, off)
+        records.append(record)
+    return Clinic(seq=header.seq, origin=header.origin, records=records)
+
+
+# --------------------------------------------------------------------------
 # Generic decode + helpers
 # --------------------------------------------------------------------------
 
@@ -782,6 +1183,8 @@ def decode_body(data_type: int, body: bytes) -> object:
         return decode_gone(body)
     if data_type == TYPE_HEARTBEAT:
         return decode_heartbeat(body)
+    if data_type == TYPE_CLINIC:
+        return decode_clinic(body)
     raise CodecError(f"unknown data_type {data_type:#06x}")
 
 

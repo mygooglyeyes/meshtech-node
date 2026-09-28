@@ -42,11 +42,17 @@ def test_scope_nodes_and_repeaters_only(store):
     use count and measured median delay - route facts, not packets.
     Heard-by coverage 2026-09-26 (lab plan Ch5) adds heard_by: one row
     per (packet hash, observer) with the signal each observer measured
-    - coverage facts, still no raw payloads.)"""
+    - coverage facts, still no raw payloads. Mesh Clinic 2026-09-27
+    (CLINIC-WIRE.md) adds clinic_nodes (node charts: strip, signal
+    stats, hop histogram - first-hand facts), clinic_flags (trouble
+    evidence rows - counts and times, never verdicts) and
+    peer_reports (what another box SAID, tagged with its origin) -
+    all decoded FACTS like the rest, still zero raw packets.)"""
     tables = {r["name"] for r in store._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert tables == {"nodes", "repeaters", "sync_state", "gone_pending",
-                      "routes", "heard_by"}
+                      "routes", "heard_by", "clinic_nodes", "clinic_flags",
+                      "peer_reports"}
 
 
 # ------------------------------------------------------------- write-through
