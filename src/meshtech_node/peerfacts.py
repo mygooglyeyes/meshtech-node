@@ -26,8 +26,11 @@ from .codec import (CLINIC_MAX_NAME, REPORT_INTRO, REPORT_PULSE,
 
 log = logging.getLogger(__name__)
 
-# Bounded like every table here (size cap, oldest out first): a
-# time-based fade law for peer words is Brett's call, not a guess.
+# Removal age (CLINIC-WIRE.md): a peer report expires 30 days after
+# the peer last said it - inside the wire's minute-age ruler, so the
+# age can always be told honestly. The size cap below is the second
+# bound (oldest out first).
+FORGET_AFTER_S = 30.0 * 86400.0
 PEER_MAX_ROWS = 5000
 
 
@@ -180,6 +183,23 @@ class PeerFacts:
                 name=name,
             ))
         return out
+
+    def prune(self, now: float) -> int:
+        """The stated removal age (CLINIC-WIRE.md): reports expire 30 d
+        after the peer last said them, mirrored to disk. Returns
+        entries dropped."""
+        cutoff = now - FORGET_AFTER_S
+        gone = [key for key, entry in self.entries.items()
+                if float(entry.get("last") or 0.0) < cutoff]
+        for key in gone:
+            del self.entries[key]
+        if self.disk is not None:
+            try:
+                self.disk.forget_peer_reports_before(cutoff)
+            except Exception:
+                log.exception("peer report disk prune failed - RAM "
+                              "stays the truth")
+        return len(gone)
 
     # -------------------------------------------------------- persistence
 

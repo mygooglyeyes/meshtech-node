@@ -352,9 +352,12 @@ class NodeStore:
     def forget_node(self, prefix: int) -> int:
         """Delete ONE node row (the RAM name-supersede's disk mirror:
         the retired identity must not resurrect at the next boot
-        refill). MESH CLINIC: the node's chart and its trouble flags
-        die with it - charts are removed only when the node is dead or
-        gone, never earlier. Returns rows deleted (0 = nothing)."""
+        refill). MESH CLINIC (CLINIC-WIRE.md): everything the clinic
+        holds FOR THIS NODE dies with it - its chart, its trouble
+        flags, and the peer intro reports about it (kind 4). Peer
+        route/section reports carry route/section ids as subject, not
+        node identity - they are NOT about the node and stay. Returns
+        rows deleted (0 = nothing)."""
         with self._conn:
             cur = self._conn.execute(
                 "DELETE FROM nodes WHERE prefix = ?", (int(prefix),))
@@ -362,6 +365,9 @@ class NodeStore:
                 "DELETE FROM clinic_nodes WHERE prefix = ?", (int(prefix),))
             self._conn.execute(
                 "DELETE FROM clinic_flags WHERE subject = ?", (int(prefix),))
+            self._conn.execute(
+                "DELETE FROM peer_reports WHERE report = 4 AND subject = ?",
+                (int(prefix),))
         self.remember_gone(prefix)
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
@@ -627,6 +633,24 @@ class NodeStore:
                            int(d.get("v3") or 0), int(d.get("v4") or 0))
             out.append(d)
         return out
+
+    def forget_clinic_flags_before(self, cutoff_ts: float) -> int:
+        """The flags' stated removal age (CLINIC-WIRE.md): 30 d after
+        their most recent event. Returns rows deleted."""
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM clinic_flags WHERE last < ?",
+                (float(cutoff_ts),))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    def forget_peer_reports_before(self, cutoff_ts: float) -> int:
+        """The peer reports' stated removal age (CLINIC-WIRE.md): 30 d
+        after the peer last said it. Returns rows deleted."""
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM peer_reports WHERE last < ?",
+                (float(cutoff_ts),))
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     def trim_peer_reports(self, max_rows: int) -> int:
         """Size cap, oldest out first (bounded like every table here -

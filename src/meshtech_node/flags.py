@@ -35,6 +35,10 @@ from .codec import (FLAG_CORRUPT_SHARE, FLAG_RATE_STORM, FLAG_SIG_FAIL,
 
 log = logging.getLogger(__name__)
 
+# Removal age (CLINIC-WIRE.md): a flag expires 30 days after its
+# most recent event - evidence goes stale and stops being shown.
+FORGET_AFTER_S = 30.0 * 86400.0
+
 RATE_WINDOW_S = 60.0            # the rate-storm window
 RATE_STORM_MIN = 20             # identity-bearing packets inside it
 TS_BACK_JUMP_S = 300.0          # how far back counts "backwards"
@@ -181,6 +185,23 @@ class TroubleFlags:
                 detail=min(0xFFFF, state.detail),
             ))
         return out
+
+    def prune(self, now: float) -> int:
+        """The stated removal age (CLINIC-WIRE.md): flags expire 30 d
+        after their most recent event, mirrored to disk. Returns rows
+        dropped."""
+        cutoff = now - FORGET_AFTER_S
+        gone = [key for key, state in self.flags.items()
+                if state.last < cutoff]
+        for key in gone:
+            del self.flags[key]
+        if self.disk is not None:
+            try:
+                self.disk.forget_clinic_flags_before(cutoff)
+            except Exception:
+                log.exception("trouble flag disk prune failed - RAM "
+                              "stays the truth")
+        return len(gone)
 
     # -------------------------------------------------------- persistence
 

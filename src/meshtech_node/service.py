@@ -940,15 +940,18 @@ class ScopeService:
                     # included. (Found in Brett's RAM-bloat audit.)
                     pruned_tags = self.external_source.repeaters.prune(now=now) \
                         if self.external_source is not None else 0
-                    # MESH CLINIC: charts die only with their node
-                    # (30 d silent = gone), same rare cadence.
-                    pruned_charts = self.clinic.prune(now)
+                    # MESH CLINIC (CLINIC-WIRE.md removal ages): charts
+                    # die only with their node (30 d), flags and peer
+                    # reports expire 30 d after their last evidence -
+                    # same rare cadence, disk mirrors included.
+                    pruned_charts = self.clinic.prune(now) \
+                        + self.peer_facts.prune(now)
                     if counts["stale"] or counts["forgotten"] or pruned_tags \
                             or r_stale or r_dead or pruned_charts:
                         log.info("node table pruned: %d stale, %d forgotten, "
                                  "%d repeater tag(s) expired; routes: "
                                  "%d stale, %d dead (table: %d nodes, %d routes, "
-                                 "%d clinic chart(s) forgotten)",
+                                 "%d clinic fact(s) forgotten)",
                                  counts["stale"], counts["forgotten"],
                                  pruned_tags, r_stale, r_dead,
                                  self.store.active_nodes_ever(),
