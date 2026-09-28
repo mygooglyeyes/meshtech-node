@@ -128,18 +128,24 @@ accepted stand-down). Abort at any time = one command (bottom).
 The channel secret may live in a mode-600 file like the other
 secrets. ONE-time move on the box (the key text moves VERBATIM - the
 radio, the app, and the node must hold the same key; nothing on air
-changes):
+changes). PROVEN ON HILLTOP 2026-09-27 - note: the cutover-night
+channel.key in /opt is RAW BINARY, not hex text, so it is NOT copied;
+the key is written from config.json's secret_hex instead:
 
-    sudo install -m 600 /opt/meshtech-node/channel.key /opt/meshtech-node/secrets/channel.key
+1.  Write the key as hex text into the new home (prints only the
+    first 6 chars so the secret never scrolls past):
 
-Then in /opt/meshtech-node/config.json: add
-`"secret_file": "/opt/meshtech-node/secrets/channel.key"` inside the
-`channel` block and DELETE the `"secret_hex": "..."` line (setting
-both stops the boot with a clear error - the node refuses to guess).
-Verify the file's first line holds the same hex characters that
-secret_hex held (run `sudo head -1 /opt/meshtech-node/secrets/channel.key`).
+    sudo python3 -c "import json,os;cfg=json.load(open('/opt/meshtech-node/config.json'));s=cfg['channel']['secret_hex'];p='/opt/meshtech-node/secrets/channel.key';open(p,'w').write(s+'\n');os.chmod(p,0o600);print('wrote',len(s),'hex chars, starts',s[:6])"
 
-    sudo /opt/meshtech-node/manage.sh restart
+2.  Point config.json at the file and delete the inline key (a
+    backup of config.json is taken first):
+
+    sudo cp /opt/meshtech-node/config.json /opt/meshtech-node/config.json.bak-secretmove && sudo python3 -c "import json; p='/opt/meshtech-node/config.json'; cfg=json.load(open(p)); cfg['channel']['secret_file']='/opt/meshtech-node/secrets/channel.key'; cfg['channel'].pop('secret_hex',None); json.dump(cfg,open(p,'w'),indent=2); print('config.json: secret_file set, secret_hex removed')"
+
+3.  Restart (manage.sh runs from the HOME clone - the run folder in
+    /opt has no git):
+
+    cd ~/meshtech-node && sudo ./manage.sh restart
 
 - Config loading FAILS on: a missing/unreadable file, a non-hex or
   short (< 16 bytes) first line, or both keys set at once. Fail
