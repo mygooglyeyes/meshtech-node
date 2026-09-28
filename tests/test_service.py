@@ -837,6 +837,20 @@ def test_stranger_heartbeat_does_not_open_the_window():
     asyncio.run(run())
 
 
+def test_heartbeat_ignores_cooldown_and_cap():
+    """A heartbeat asks for nothing: a client that JUST got a full map
+    (cooldown live) keeps its cadence alive - only the allow-list
+    gates a keep-alive (budget.prefix_allowed)."""
+    async def run():
+        svc = make_service(refresh_cooldown_seconds=3600.0)
+        svc.rate.record("aabbccddeeff")   # just asked - cooldown live
+        await svc.on_packet(codec.Heartbeat(seq=1, origin=0x1234),
+                            "aabbccddeeff")
+        assert svc._heartbeat_count == 1
+        assert svc._audience_fresh() is True
+    asyncio.run(run())
+
+
 def test_broadcast_loop_goes_quiet_without_audience():
     """The cadence loop itself: pulse DUE but no audience sign ->
     nothing flies, and the demo bench (use_demo) bypasses the gate."""

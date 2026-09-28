@@ -138,6 +138,20 @@ class RefreshRateLimiter:
         snapped = min(self.SPAN_CAPS, key=lambda c: abs(c - span_km))
         return self.SPAN_CAPS.get(snapped, self._cap)
 
+    def prefix_allowed(self, client_prefix: str) -> bool:
+        """Allow-list check ONLY - no cooldown, no hourly cap.
+
+        What a contentless keep-alive needs (Brett's heartbeat,
+        2026-09-26): a HEARTBEAT asks for nothing, so it can never
+        spend the airtime budget - but it must respect the SAME
+        security boundary as refreshes (a stranger's keep-alive must
+        not re-open the cadence for the whole mesh)."""
+        prefix = client_prefix.lower()
+        if not self._allowed:
+            return True
+        return any(prefix.startswith(a) or a.startswith(prefix)
+                   for a in self._allowed)
+
     @staticmethod
     def _snap_bucket(span_km: float) -> float:
         if not span_km or span_km <= 0:

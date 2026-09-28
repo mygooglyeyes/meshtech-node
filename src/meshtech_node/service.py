@@ -223,11 +223,10 @@ class ScopeService:
                                            via_door=via_door)
             elif isinstance(obj, codec.Heartbeat):
                 # AUDIENCE GATE (Brett's 2/5): the app's tiny keep-alive.
-                # Listens respects the same allow-list as refreshes (a
-                # stranger's heartbeats must not re-open the cadence for
-                # the whole mesh). The door never sends one.
-                allowed, _why, _retry = self.rate.verdict(sender_prefix)
-                if allowed:
+                # The ALLOW-LIST only - a heartbeat asks for nothing, so
+                # cooldown/cap would wrongly silence an honest app that
+                # just answered a map (prefix_allowed, budget.py).
+                if self.rate.prefix_allowed(sender_prefix):
                     self._heartbeat_count += 1
                     self._note_air_client(sender_prefix, "heartbeat")
                 else:
