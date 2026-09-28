@@ -100,22 +100,32 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
         if disk is not None:
             source.repeaters.sink = disk
             brain.store.disk = disk
+            # MESH CLINIC (CLINIC-WIRE.md): the clinic stores write
+            # through too - charts, trouble flags, peer reports.
+            brain.charts.disk = disk
+            brain.trouble.disk = disk
+            brain.peer_facts.disk = disk
             # BOOT REFILL: disk -> RAM before the first packet flows, so
             # a restart forgets nobody (the map is whole in seconds).
             # ROUTE MEMORY (2026-09-24): routes refill too - they were
-            # never meant to die with the process.
+            # never meant to die with the process. MESH CLINIC: the
+            # clinic's four stores refill as well - restarts lose
+            # nothing.
             n_nodes = brain.store.refill_nodes(disk.node_rows())
             n_tags = source.repeaters.refill_from(disk.repeater_rows())
             n_routes = brain.store.refill_routes(disk.route_rows())
+            n_clinic = brain.clinic.refill(disk) \
+                + brain.peer_facts.refill(disk.peer_report_rows())
             # BOOT RE-ANCHOR (v00.000.047, Brett 2026-09-25): saved
             # routes whose square was unknown when first heard are
             # re-checked against the node facts now back in RAM -
             # placed routes gain their square, the rest stay held.
             brain.store.reanchor_routes()
-            if n_nodes or n_tags or n_routes:
+            if n_nodes or n_tags or n_routes or n_clinic:
                 log.info("disk memory restored: %d node(s), %d repeater "
-                         "tag(s), %d route(s) from %s", n_nodes, n_tags,
-                         n_routes, settings.storage.db_path)
+                         "tag(s), %d route(s), %d clinic fact(s) from %s",
+                         n_nodes, n_tags, n_routes, n_clinic,
+                         settings.storage.db_path)
             # MQTT COLLECTOR (lab plan 2026-09-26, Ch5): opt-in
             # coverage collection from the public observers. OFF
             # unless config says otherwise; needs the disk store (the

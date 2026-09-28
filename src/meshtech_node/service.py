@@ -22,14 +22,18 @@ from typing import Dict, Optional
 
 from . import codec
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
+from .charts import NodeChartBook
+from .clinic import ClinicIngest
 from .config import Settings
 from .feedbuilder import FeedBuilder, OutPacket, route_id as route_id_of
+from .flags import TroubleFlags
 from .grid import GridGeometry
 from .observations import RollingStore
 from .packetsource import (
     DemoSource, contact_row,
     neighbor_of, node_class_of, row_prefix_of,
 )
+from .peerfacts import PeerFacts
 from .peers import PeerTable, SectionOwners
 
 log = logging.getLogger("meshtech-node.service")
@@ -123,6 +127,17 @@ class ScopeService:
         # (after the builder exists): RAM rows with no square re-check
         # through the builder's sender/trail facts at refill time.
         self.store.path_section_of = self.builder._section_of_path
+        # MESH CLINIC v2 (CLINIC-WIRE.md, Phase 1): the clinic books.
+        # Ingestion fans out from ONE place - the store's ingest seam
+        # calls clinic.observe for every packet the store keeps.
+        # First-hand books (charts + flags) plus the peer book (what
+        # other boxes said over the air). Isolation baseline: the
+        # whole clinic works with zero peers heard.
+        self.charts = NodeChartBook(origin=self.origin)
+        self.trouble = TroubleFlags(origin=self.origin)
+        self.clinic = ClinicIngest(self.charts, self.trouble)
+        self.peer_facts = PeerFacts(origin=self.origin)
+        self.store.on_observed = self.clinic.observe
         self.peers = PeerTable()
         self.owners = SectionOwners(self.origin, self.geometry, self.peers)
         self.dedupe = RefreshDedupe(ttl_seconds=600.0)
@@ -233,6 +248,15 @@ class ScopeService:
                     self._unknown_heartbeat_count += 1
                     log.debug("Heartbeat from %s ignored - not on the "
                               "allow-list", sender_prefix[:12])
+            elif isinstance(obj, (codec.Pulse, codec.SectSum, codec.Route,
+                                  codec.Intro)):
+                # MESH CLINIC (CLINIC-WIRE.md): a DATA BURST heard over
+                # the air from another box - folded into our picture,
+                # tagged with which box said it (peerfacts.py). Passive
+                # listening only: anti-stomping rules, rate limits and
+                # airtime gates untouched; own echoes and anonymous
+                # origins are counted and dropped there.
+                self.peer_facts.observe(obj)
             else:
                 # Everything else is host->client only; hosts ignore
                 # it - but v0.0.050 says the silence out loud: a
@@ -916,15 +940,19 @@ class ScopeService:
                     # included. (Found in Brett's RAM-bloat audit.)
                     pruned_tags = self.external_source.repeaters.prune(now=now) \
                         if self.external_source is not None else 0
+                    # MESH CLINIC: charts die only with their node
+                    # (30 d silent = gone), same rare cadence.
+                    pruned_charts = self.clinic.prune(now)
                     if counts["stale"] or counts["forgotten"] or pruned_tags \
-                            or r_stale or r_dead:
+                            or r_stale or r_dead or pruned_charts:
                         log.info("node table pruned: %d stale, %d forgotten, "
                                  "%d repeater tag(s) expired; routes: "
-                                 "%d stale, %d dead (table: %d nodes, %d routes)",
+                                 "%d stale, %d dead (table: %d nodes, %d routes, "
+                                 "%d clinic chart(s) forgotten)",
                                  counts["stale"], counts["forgotten"],
                                  pruned_tags, r_stale, r_dead,
                                  self.store.active_nodes_ever(),
-                                 len(self.store.routes_all()))
+                                 len(self.store.routes_all()), pruned_charts)
                     pkt = self.builder.build_layout()
                     await self._send_burst([pkt], gap=0.0)
                     self.builder._last_layout = now
@@ -944,7 +972,17 @@ class ScopeService:
                     self.builder._background_section = \
                         (self.builder._background_section %
                          self.geometry.section_count) + 1  # rotate 1..N, never 0
-                    await self._send_burst([pulse, sect], gap=feed.burst_gap_seconds)
+                    burst = [pulse, sect]
+                    # MESH CLINIC (CLINIC-WIRE.md): one CLINIC batch
+                    # per pulse beat - the NEXT cursor slice of this
+                    # box's facts (first-hand + peer-tagged). Hard
+                    # rule 6 unchanged: the beat only runs while an
+                    # over-the-air client is proven listening.
+                    clinic = self.builder.build_clinic_batch(
+                        self.clinic, self.peer_facts, now=now)
+                    if clinic is not None:
+                        burst.append(clinic)
+                    await self._send_burst(burst, gap=feed.burst_gap_seconds)
                     self.builder._last_pulse = now
             except Exception:
                 log.exception("broadcast tick FAILED - the feed keeps "

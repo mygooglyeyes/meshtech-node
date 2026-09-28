@@ -344,3 +344,6 @@ def test_golden_vectors(name):
         assert codec.encode_intro(intro) == raw
     elif name == "refresh":
         assert codec.encode_refresh_req(obj) == raw
+    elif name == "clinic":
+        assert codec.encode_clinic(obj.records, seq=obj.seq,
+                                   origin=obj.origin) == raw

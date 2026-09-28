@@ -105,6 +105,10 @@ class RawPacketSource:
     # decode_any: our decoder failing must never hide a packet the
     # app's own decoder could read (no silent gaps).
     on_heard: Optional[Callable[[int, bytes, RxPacket], None]] = None
+    # MESH CLINIC (CLINIC-WIRE.md): the flag book's frame feed - one
+    # note_frame per heard frame and one note_sig_fail per advert the
+    # signature gate rejected. None = no clinic wired.
+    flag_sink: Optional[object] = None
     stats: SourceStats = field(default_factory=SourceStats)
     # UNIDENTIFIED-REPEATER TRACKER (Brett 2026-09-21): every path tag
     # in every heard packet is counted - emergency nodes that repeat
@@ -147,6 +151,21 @@ class RawPacketSource:
             log.info("RawPacketSource stopped: %s", self.stats_line())
 
     def handle_packet(self, rx: RxPacket) -> Optional[Observation]:
+        """One heard frame through the pipeline, with the clinic's
+        accounting wrapper (CLINIC-WIRE.md): exactly one note_frame
+        per heard frame - the corrupt-share window's raw material.
+        The parse itself is _parse_packet, unchanged."""
+        before = self.stats.corrupt + self.stats.malformed
+        obs = self._parse_packet(rx)
+        if self.flag_sink is not None:
+            try:
+                self.flag_sink.note_frame(
+                    (self.stats.corrupt + self.stats.malformed) > before)
+            except Exception:
+                log.exception("flag sink raised - listener continues")
+        return obs
+
+    def _parse_packet(self, rx: RxPacket) -> Optional[Observation]:
         """Parse+decode one heard packet; returns the Observation for
         the ingest queue, or None (counted honestly - malformed frames
         and flood duplicates only).
@@ -291,6 +310,18 @@ class RawPacketSource:
                           "cannot verify ANY advert (install pynacl; "
                           "manage.sh now does). corrupt=%d", self.stats.corrupt)
                 return None
+            # MESH CLINIC (CLINIC-WIRE.md flag 1): the gate actually
+            # verified and said NO - one evidence row per failed check
+            # on the CLAIMED prefix (broken node OR impersonation -
+            # the flag does not pick). The pynacl-missing branch above
+            # is NOT a sig-fail fact: nothing was verified at all.
+            if self.flag_sink is not None:
+                try:
+                    self.flag_sink.note_sig_fail(
+                        frame.payload[0] if frame.payload else 0)
+                except Exception:
+                    log.exception("flag sink raised - listener "
+                                  "continues")
             # CAPTURE (2026-09-23, the every-advert-rejects hunt): at
             # most ONE rejected advert per minute is logged with its
             # leading bytes + recipe-battery verdicts, so a rejected

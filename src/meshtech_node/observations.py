@@ -113,6 +113,11 @@ class RollingStore:
         self._routes: Dict[Tuple[int, ...], Dict[str, object]] = {}
         # Optional NodeStore (disk write-through + boot refill).
         self.disk = disk
+        # MESH CLINIC (CLINIC-WIRE.md): the ONE observation fan-out.
+        # add() calls this for every packet the store keeps, so the
+        # clinic books see the same truth as the store - never a
+        # second ingestion path that could fork. None = no clinic.
+        self.on_observed = None
         # SECTION PLUMBING for routes: the store itself has no grid;
         # the ingest seam sets `section_of` (an Observation -> square)
         # so every heard packet can stamp WHERE it was heard. None =
@@ -151,6 +156,15 @@ class RollingStore:
                            now=now, sender_prefix=obs.prefix,
                            direct=direct,
                            section_id=self._last_section(obs))
+        # MESH CLINIC: the one fan-out point (charts + flags). Guarded
+        # like the disk write-through: a broken clinic never takes the
+        # ingest chain down.
+        if self.on_observed is not None:
+            try:
+                self.on_observed(obs)
+            except Exception:
+                log.exception("clinic ingest hook raised - the store "
+                              "keeps the truth")
 
     # ------------------------------------------------- route memory
 
@@ -208,7 +222,7 @@ class RollingStore:
         entry = self._routes.setdefault(
             path, {"first": recv_ts, "last": recv_ts, "count": 0,
                    "delays": [], "sender": 0, "direct": False,
-                   "section": section_id})
+                   "section": section_id, "dmin": None, "dmax": None})
         entry["last"] = max(float(entry["last"]), recv_ts)
         entry["count"] = int(entry["count"]) + 1
         if section_id >= 0:
@@ -222,6 +236,15 @@ class RollingStore:
             delays.append(float(delay_s))
             if len(delays) > 64:
                 del delays[:-64]
+            # CLINIC delay spread (CLINIC-WIRE.md kind 2): lifetime
+            # min/max, tracked over HONEST non-negative samples only -
+            # a negative "delay" is clock skew, not a delay fact.
+            if delay_s >= 0:
+                dmin, dmax = entry.get("dmin"), entry.get("dmax")
+                entry["dmin"] = float(delay_s) if dmin is None else \
+                    min(float(dmin), float(delay_s))
+                entry["dmax"] = float(delay_s) if dmax is None else \
+                    max(float(dmax), float(delay_s))
         self._disk_route(path, entry, now=now)
 
     def _disk_route(self, path: Tuple[int, ...], entry: Dict[str, object],
@@ -240,6 +263,8 @@ class RollingStore:
                 sender_prefix=int(entry.get("sender") or 0),
                 is_direct=bool(entry.get("direct")),
                 section_id=int(entry.get("section") or -1),
+                delay_min_s=int(round(float(entry.get("dmin") or 0.0))),
+                delay_max_s=int(round(float(entry.get("dmax") or 0.0))),
                 ts=now)
         except Exception:
             log.exception("route disk write-through failed (path %s) "
@@ -268,6 +293,10 @@ class RollingStore:
                 "section": int(row.get("section_id") or -1),
                 "delays": ([float(row["delay_med_s"])]
                            if row.get("delay_med_s") else []),
+                "dmin": (float(row["delay_min_s"])
+                         if row.get("delay_min_s") else None),
+                "dmax": (float(row["delay_max_s"])
+                         if row.get("delay_max_s") else None),
             }
             restored += 1
         if restored:
