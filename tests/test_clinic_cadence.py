@@ -9,7 +9,9 @@ REAL on_packet surfaces, the REAL NodeStore.
 Pinned here:
 1. A pulse beat emits a cursor-rotated CLINIC batch that respects the
    163 B / 7-record caps - and ONLY while an over-the-air audience is
-   proven (hard rule 6). Request/answer behavior stays clinic-free.
+   proven (hard rule 6). The AIR's request/answer behavior stays
+   clinic-free - the DOOR's answers carry the book now (Brett,
+   2026-09-29; test_clinic_door_dump.py pins that side).
 2. The prune drops expired chart/flag/peer facts at the ages
    CLINIC-WIRE.md states (30 d) and keeps fresh evidence.
 3. forget_node removes everything the clinic held FOR THAT NODE
@@ -148,9 +150,9 @@ async def test_no_air_audience_no_cadence_no_clinic():
 
 @pytest.mark.asyncio
 async def test_request_answers_carry_no_clinic():
-    """Request/answer behavior is unchanged: connect pulses and wire
-    refresh answers are exactly what they were - and never clinic
-    packets. Dedupe still answers once."""
+    """The AIR's request/answer behavior is unchanged: air connect
+    pulses and radio refresh answers are exactly what they were -
+    and never clinic packets. Dedupe still answers once."""
     svc, radio = make_clinic_service()
     now = time.time()
     for i in range(5):

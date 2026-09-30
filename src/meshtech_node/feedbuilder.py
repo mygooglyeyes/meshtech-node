@@ -118,15 +118,8 @@ class FeedBuilder:
         for record in ordered:
             if len(chunk) >= codec.CLINIC_MAX_RECORDS:
                 break
-            try:
-                wire = codec.encode_clinic_record(record)
-            except codec.CodecError as exc:
-                key = codec.clinic_sort_key(record)
-                if key not in self._clinic_unwireable:
-                    self._clinic_unwireable.add(key)
-                    log.warning("clinic fact NOT minted (the wire "
-                                "cannot carry it - never pinned): %s",
-                                exc)
+            wire = self._clinic_wire(record)
+            if wire is None:
                 continue
             if used + len(wire) > codec.MAX_CHANNEL_DATA:
                 break
@@ -135,9 +128,102 @@ class FeedBuilder:
         if not chunk:
             return None
         self._clinic_cursor = (start + len(chunk)) % len(records)
-        payload = codec.encode_clinic(chunk, seq=self._next_seq(),
+        return self._clinic_packet(chunk)
+
+    def _clinic_wire(self, record: object) -> Optional[bytes]:
+        """One record to wire bytes - or None, refused LOUDLY once and
+        never pinned (a fact the wire cannot carry is not minted)."""
+        try:
+            return codec.encode_clinic_record(record)
+        except codec.CodecError as exc:
+            key = codec.clinic_sort_key(record)
+            if key not in self._clinic_unwireable:
+                self._clinic_unwireable.add(key)
+                log.warning("clinic fact NOT minted (the wire "
+                            "cannot carry it - never pinned): %s",
+                            exc)
+            return None
+
+    def _clinic_packet(self, records: List[object]) -> OutPacket:
+        payload = codec.encode_clinic(records, seq=self._next_seq(),
                                       origin=self.origin)
         return OutPacket(codec.TYPE_CLINIC, payload, "clinic")
+
+    def _clinic_pages(self, records: List[object]) -> List[OutPacket]:
+        """The truth in wire-legal pages: the SAME page law the air
+        obeys (<= 7 records, <= 163 B), carried as many times as the
+        record count needs - the door has no cap to respect."""
+        out: List[OutPacket] = []
+        chunk: List[object] = []
+        used = 9
+        for record in sorted(records, key=codec.clinic_sort_key):
+            wire = self._clinic_wire(record)
+            if wire is None:
+                continue
+            if chunk and (len(chunk) >= codec.CLINIC_MAX_RECORDS
+                          or used + len(wire) > codec.MAX_CHANNEL_DATA):
+                out.append(self._clinic_packet(chunk))
+                chunk, used = [], 9
+            chunk.append(record)
+            used += len(wire)
+        if chunk:
+            out.append(self._clinic_packet(chunk))
+        return out
+
+    def build_clinic_dump(self, clinic: object, peers: object, *,
+                          now: Optional[float] = None,
+                          section_id: Optional[int] = None,
+                          route_id: Optional[int] = None
+                          ) -> List[OutPacket]:
+        """THE DOOR IS THE FULL DATA DUMP (Brett, 2026-09-29: "TCP is
+        full data dump, BLE carries the updates only").
+
+        Door-only: the whole clinic book in wire-legal pages - no
+        cursor, no budget, no audience gate. scope: both None = the
+        whole book (connect burst / whole-area ask); section_id =
+        that square's node/route/flag charts; route_id = that route's
+        chart. The mesh-wide health facts (airtime, senders,
+        exchanges, collisions) ride EVERY door answer - the cards'
+        "mesh air" rows are never square-local. Second-hand peer
+        reports ride the full dump only."""
+        now = time.time() if now is None else now
+        records = list(clinic.records(self.store, now)) \
+            + list(peers.records(now))
+        if section_id is not None or route_id is not None:
+            records = [r for r in records
+                       if self._clinic_in_scope(r, section_id, route_id)]
+        return self._clinic_pages(records)
+
+    def _clinic_in_scope(self, record: object,
+                         section_id: Optional[int],
+                         route_id: Optional[int]) -> bool:
+        if isinstance(record, (codec.ClinicAirtimeFact,
+                               codec.ClinicSenderFact,
+                               codec.ClinicExchangeFact,
+                               codec.ClinicCollisionFact)):
+            return True             # mesh-wide health: every answer
+        if isinstance(record, codec.ClinicPeerFact):
+            return False            # second-hand: the full dump only
+        if route_id is not None:
+            return isinstance(record, codec.ClinicRouteFact) \
+                and _route_id(tuple(record.path)) == route_id
+        if isinstance(record, codec.ClinicNodeFact):
+            return self._clinic_node_section(record.prefix) == section_id
+        if isinstance(record, codec.ClinicRouteFact):
+            return self._section_of_path(tuple(record.path)) == section_id
+        if isinstance(record, codec.ClinicFlagFact):
+            if record.subject == 0:
+                return True         # mesh-wide flag (corrupt share)
+            return self._clinic_node_section(record.subject) == section_id
+        return False
+
+    def _clinic_node_section(self, prefix: int) -> int:
+        """The square a node sits in (-1 honestly unplaced)."""
+        info = self.store.node_info(prefix) or {}
+        lat, lon = info.get("lat"), info.get("lon")
+        if lat is None or lon is None:
+            return -1
+        return self.geometry.section_for(float(lat), float(lon))
 
     # ------------------------------------------------------------ aggregations
 

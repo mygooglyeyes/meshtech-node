@@ -234,8 +234,15 @@ direct facts alone. Peer reports only ADD; nothing depends on them.
   hard rule 6 unchanged: no listener, no airtime).
 - Capped: one packet per beat, <= 163 bytes, cursor-rotated so every
   fact cycles through. The normal budget limiter governs like always.
-- Refresh answers and request/answer behavior are UNCHANGED. Clinic
-  packets never appear in answers and never answer asks.
+- THE DOOR IS THE FULL DATA DUMP (Brett, 2026-09-29: "TCP is full
+  data dump, BLE carries the updates only"). A door-borne connect
+  burst carries the WHOLE book in wire-legal pages (<= 7 records,
+  <= 163 B each — the door carries as many pages as the truth
+  needs); a door ask's answer carries the asked square's charts (or
+  the asked route's chart), and the whole book for a whole-area ask.
+  The mesh-wide health facts (kinds 5-8) ride every door answer.
+- The AIR's request/answer behavior is UNCHANGED: clinic packets
+  never ride radio answers and never answer air asks.
 - Every built packet goes through the door tap like all others.
 
 ## Persistence (restarts lose nothing)

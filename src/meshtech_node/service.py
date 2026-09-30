@@ -390,6 +390,19 @@ class ScopeService:
         packets = self.builder.build_refresh_response(
             req.kind, req.target, span_km=req.span_km,
             sync_marker=req.sync_marker)
+        # THE DOOR IS THE FULL DATA DUMP (Brett, 2026-09-29): a door
+        # answer carries the clinic facts too - the asked square's
+        # charts (or the asked route's chart), and the WHOLE book for
+        # a whole-area ask. Radio answers stay lean: clinic never
+        # rides the air's request/answer path (hard rule 6's siblings
+        # untouched; test_request_answers_carry_no_clinic pins it).
+        if via_door:
+            packets.extend(self.builder.build_clinic_dump(
+                self.clinic, self.peer_facts,
+                section_id=target if req.kind == codec.REFRESH_KIND_SECTION
+                and target else None,
+                route_id=target if req.kind == codec.REFRESH_KIND_ROUTE
+                and target else None))
         # WHOLE-AREA refresh also carries a PULSE (last in the burst):
         # the app's Feed-health card reads it, and Brett's rule is a
         # refresh answers with a LIVE map, never "no pulse yet"
@@ -560,6 +573,14 @@ class ScopeService:
                         pkt = self.builder.build_route(sid, path)
                         if pkt:
                             burst.append(pkt)
+        # THE DOOR IS THE FULL DATA DUMP (Brett, 2026-09-29: "TCP is
+        # full data dump, BLE carries the updates only"): the door's
+        # connect burst carries the WHOLE clinic book - every chart,
+        # flag and health fact this box holds, in wire-legal pages.
+        # The radio burst keeps its rotating update slices only.
+        if via_door:
+            burst.extend(self.builder.build_clinic_dump(
+                self.clinic, self.peer_facts))
         burst.append(self.build_pulse_now())
         log.info("PULSE on demand (%s%s%s) - uptime %d min",
                  reason, " + LAYOUT" if with_layout else "",
