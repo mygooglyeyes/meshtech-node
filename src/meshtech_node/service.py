@@ -21,6 +21,8 @@ import time
 from typing import Dict, Optional
 
 from . import codec
+from .airtime import airtime_from_settings
+from .healthfacts import HealthTracker
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
 from .charts import NodeChartBook
 from .clinic import ClinicIngest
@@ -135,7 +137,18 @@ class ScopeService:
         # whole clinic works with zero peers heard.
         self.charts = NodeChartBook(origin=self.origin)
         self.trouble = TroubleFlags(origin=self.origin)
-        self.clinic = ClinicIngest(self.charts, self.trouble)
+        # MESH HEALTH (HEALTH-DEFINITIONS.md, Brett 2026-09-29): the
+        # health book - duplicates, airtime occupancy, duty headroom,
+        # seq gaps, flaps, collisions, ask->answer success. Session-
+        # scoped counters: a restart starts fresh, never guessed.
+        self.health = HealthTracker(
+            self.origin,
+            airtime_ms_fn=lambda n: airtime_from_settings(n, settings.radio),
+            duty_fn=lambda now: (
+                self.budget.tx_seconds_last_hour(now=now),
+                int(self.budget.duty_allowance_s_per_hour)))
+        self.clinic = ClinicIngest(self.charts, self.trouble,
+                                   health=self.health)
         self.peer_facts = PeerFacts(origin=self.origin)
         self.store.on_observed = self.clinic.observe
         self.peers = PeerTable()
@@ -226,6 +239,10 @@ class ScopeService:
         through the door only: no radio TX, no budget, no limiter,
         no burst gaps."""
         try:
+            if not via_door:
+                # MESH HEALTH: "TCP is not the mesh" - only over-the-
+                # air exchanges score in the health book.
+                self.health.observe_packet(obj)
             if isinstance(obj, codec.Layout):
                 self._on_peer_layout(obj)
             elif isinstance(obj, codec.RefreshReq):
@@ -419,6 +436,10 @@ class ScopeService:
             if gone:
                 self.builder.store.clear_gone(gone)
             return
+        # MESH HEALTH: our own answer is credited at send time - our
+        # TX never echoes back to our own listener (the flood dedupe
+        # suppresses it), so the air cannot score it for us.
+        self.health.note_own_answer(req.kind, req.target)
         await self._send_burst(packets)
         if gone:
             self.builder.store.clear_gone(gone)

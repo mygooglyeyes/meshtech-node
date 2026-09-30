@@ -763,6 +763,11 @@ CLINIC_KIND_NODE = 1
 CLINIC_KIND_ROUTE = 2
 CLINIC_KIND_FLAG = 3
 CLINIC_KIND_PEER = 4
+# MESH HEALTH FACTS (HEALTH-DEFINITIONS.md, Brett 2026-09-29).
+CLINIC_KIND_AIRTIME = 5
+CLINIC_KIND_SENDER = 6
+CLINIC_KIND_EXCHANGE = 7
+CLINIC_KIND_COLLISION = 8
 
 # Trouble flags (kind 3) - FACTS with evidence, never verdicts.
 FLAG_SIG_FAIL = 1
@@ -782,6 +787,7 @@ SHARE_UNKNOWN_PCT = 255       # node fact: no identified traffic counted
 SIGNAL_UNKNOWN = -128         # i8 signal stats: no samples (radio never
                               # reports -128 dBm / -32 dB - not receivable)
 SIGNAL_SD_UNKNOWN = 255       # u8 signal spread: fewer than 2 samples
+NUM_UNKNOWN = 0xFFFF           # health count/ratio fields: never counted
 
 
 @dataclass
@@ -846,6 +852,54 @@ class ClinicPeerFact:
 
 
 @dataclass
+class ClinicAirtimeFact:
+    """Kind 5: the mesh's airtime as THIS box counts it (12 B)."""
+    source: int
+    window_min: int               # the REAL length of the counting window
+    dup_per_mille: int = NUM_UNKNOWN     # extra copies / all copies heard
+    occupancy_per_mille: int = NUM_UNKNOWN  # heard airtime share of window
+    duty_headroom_s: int = NUM_UNKNOWN   # our TX allowance left, seconds
+    tx_used_s: int = NUM_UNKNOWN         # what we actually sent, seconds
+
+
+@dataclass
+class ClinicSenderFact:
+    """Kind 6: one sender's behavior per window (14 B).
+
+    sender = the wire tag the traffic self-identifies with (the
+    clinic header's 2-byte origin). Anonymous group traffic cannot
+    be attributed and never lands here - it counts in kind 5 only.
+    """
+    source: int
+    sender: int
+    window_min: int
+    dup_per_mille: int = NUM_UNKNOWN
+    lost: int = NUM_UNKNOWN       # seq numbers this box never heard
+    reordered: int = NUM_UNKNOWN  # late arrivals of those numbers
+    flaps: int = NUM_UNKNOWN      # heard -> silent >= 30 min -> heard
+
+
+@dataclass
+class ClinicExchangeFact:
+    """Kind 7: overheard ask/answer exchanges (10 B)."""
+    source: int
+    window_min: int
+    asked: int = NUM_UNKNOWN
+    answered: int = NUM_UNKNOWN
+    median_answer_s: int = 0      # 0 = unknown
+
+
+@dataclass
+class ClinicCollisionFact:
+    """Kind 8: one PROVEN hash collision (tag with two keys)."""
+    source: int
+    tag: Tuple[int, ...]          # the short tag AS HEARD (1..3 bytes)
+    key_a: bytes                  # pubkey A's first 8 bytes
+    key_b: bytes                  # pubkey B's first 8 bytes
+    last_age_min: int = AGE_UNKNOWN_MIN
+
+
+@dataclass
 class Clinic:
     seq: int
     origin: int
@@ -881,6 +935,15 @@ def clinic_sort_key(record: object) -> tuple:
     if isinstance(record, ClinicPeerFact):
         return (CLINIC_KIND_PEER, record.report, record.source,
                 (record.subject,))
+    if isinstance(record, ClinicAirtimeFact):
+        return (CLINIC_KIND_AIRTIME, 0, record.source, ())
+    if isinstance(record, ClinicSenderFact):
+        return (CLINIC_KIND_SENDER, record.sender, record.source, ())
+    if isinstance(record, ClinicExchangeFact):
+        return (CLINIC_KIND_EXCHANGE, 0, record.source, ())
+    if isinstance(record, ClinicCollisionFact):
+        return (CLINIC_KIND_COLLISION, 0, record.source,
+                tuple(record.tag) + tuple(record.key_a) + tuple(record.key_b))
     raise CodecError(f"unknown clinic record {type(record).__name__}")
 
 
@@ -990,6 +1053,50 @@ def encode_clinic_record(record: object) -> bytes:
             payload += name_bytes
         else:
             raise CodecError(f"unknown peer report kind {record.report}")
+    elif isinstance(record, ClinicAirtimeFact):
+        payload = struct.pack(
+            "<HHHHHH",
+            _u16(record.source, "airtime source"),
+            _u16(record.window_min, "airtime window_min"),
+            _u16(record.dup_per_mille, "airtime dup_per_mille"),
+            _u16(record.occupancy_per_mille, "airtime occupancy_per_mille"),
+            _u16(record.duty_headroom_s, "airtime duty_headroom_s"),
+            _u16(record.tx_used_s, "airtime tx_used_s"),
+        )
+    elif isinstance(record, ClinicSenderFact):
+        payload = struct.pack(
+            "<HHHHHHH",
+            _u16(record.source, "sender source"),
+            _u16(record.sender, "sender tag"),
+            _u16(record.window_min, "sender window_min"),
+            _u16(record.dup_per_mille, "sender dup_per_mille"),
+            _u16(record.lost, "sender lost"),
+            _u16(record.reordered, "sender reordered"),
+            _u16(record.flaps, "sender flaps"),
+        )
+    elif isinstance(record, ClinicExchangeFact):
+        payload = struct.pack(
+            "<HHHHH",
+            _u16(record.source, "exchange source"),
+            _u16(record.window_min, "exchange window_min"),
+            _u16(record.asked, "exchange asked"),
+            _u16(record.answered, "exchange answered"),
+            _u16(record.median_answer_s, "exchange median_answer_s"),
+        )
+    elif isinstance(record, ClinicCollisionFact):
+        tag = tuple(record.tag)
+        if not 1 <= len(tag) <= 3:
+            raise CodecError(f"collision tag length {len(tag)} outside 1..3")
+        key_a, key_b = bytes(record.key_a), bytes(record.key_b)
+        if len(key_a) != 8 or len(key_b) != 8:
+            raise CodecError("collision keys must be 8 B each (pubkey "
+                             "prefixes) - refuse, never pad a key")
+        payload = struct.pack("<H", _u16(record.source, "collision source"))
+        payload += struct.pack("<B", len(tag))
+        payload += bytes(_u8(t, "collision tag byte") for t in tag)
+        payload += key_a + key_b
+        payload += struct.pack(
+            "<H", _u16(record.last_age_min, "collision last_age_min"))
     else:
         raise CodecError(f"unknown clinic record {type(record).__name__}")
     if len(payload) > 255:
@@ -1006,6 +1113,14 @@ def _clinic_kind(record: object) -> int:
         return CLINIC_KIND_FLAG
     if isinstance(record, ClinicPeerFact):
         return CLINIC_KIND_PEER
+    if isinstance(record, ClinicAirtimeFact):
+        return CLINIC_KIND_AIRTIME
+    if isinstance(record, ClinicSenderFact):
+        return CLINIC_KIND_SENDER
+    if isinstance(record, ClinicExchangeFact):
+        return CLINIC_KIND_EXCHANGE
+    if isinstance(record, ClinicCollisionFact):
+        return CLINIC_KIND_COLLISION
     raise CodecError(f"unknown clinic record {type(record).__name__}")
 
 
@@ -1105,6 +1220,49 @@ def _decode_clinic_record(payload: bytes, off: int) -> Tuple[object, int]:
             source=source, report=report, subject=subject,
             heard_age_min=heard_age, values=values, path=path, cls=cls,
             lat=lat, lon=lon, name=name), off
+    if kind == CLINIC_KIND_AIRTIME:
+        if len(body) != 12:
+            raise CodecError(f"CLINIC airtime fact must be 12 B, got "
+                             f"{len(body)}")
+        (source, window_min, dup_pm, occ_pm, headroom_s,
+         tx_used_s) = struct.unpack("<HHHHHH", body)
+        return ClinicAirtimeFact(
+            source=source, window_min=window_min, dup_per_mille=dup_pm,
+            occupancy_per_mille=occ_pm, duty_headroom_s=headroom_s,
+            tx_used_s=tx_used_s), off
+    if kind == CLINIC_KIND_SENDER:
+        if len(body) != 14:
+            raise CodecError(f"CLINIC sender fact must be 14 B, got "
+                             f"{len(body)}")
+        (source, sender, window_min, dup_pm, lost,
+         reordered, flaps) = struct.unpack("<HHHHHHH", body)
+        return ClinicSenderFact(
+            source=source, sender=sender, window_min=window_min,
+            dup_per_mille=dup_pm, lost=lost, reordered=reordered,
+            flaps=flaps), off
+    if kind == CLINIC_KIND_EXCHANGE:
+        if len(body) != 10:
+            raise CodecError(f"CLINIC exchange fact must be 10 B, got "
+                             f"{len(body)}")
+        (source, window_min, asked, answered,
+         med) = struct.unpack("<HHHHH", body)
+        return ClinicExchangeFact(
+            source=source, window_min=window_min, asked=asked,
+            answered=answered, median_answer_s=med), off
+    if kind == CLINIC_KIND_COLLISION:
+        if len(body) < 3:
+            raise CodecError("CLINIC collision fact too short")
+        source = struct.unpack_from("<H", body, 0)[0]
+        tag_len = body[2]
+        if not 1 <= tag_len <= 3 or len(body) != 3 + tag_len + 18:
+            raise CodecError("CLINIC collision fact malformed")
+        tag = tuple(body[3:3 + tag_len])
+        key_a = bytes(body[3 + tag_len:3 + tag_len + 8])
+        key_b = bytes(body[3 + tag_len + 8:3 + tag_len + 16])
+        last_age = struct.unpack_from("<H", body, 3 + tag_len + 16)[0]
+        return ClinicCollisionFact(
+            source=source, tag=tag, key_a=key_a, key_b=key_b,
+            last_age_min=last_age), off
     raise CodecError(f"unknown CLINIC record kind {kind}")
 
 

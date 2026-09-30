@@ -65,6 +65,26 @@ def main() -> int:
                              values=(1234, 4, 40, 9)),
     ], seq=0x0113, origin=0xB17E)
 
+    # MESH HEALTH (HEALTH-DEFINITIONS.md, Brett 2026-09-29): one
+    # batch carrying the four health record kinds 5-8. The kinds
+    # 1-4 "clinic" vector above stays untouched (its twin on the
+    # app side must keep decoding it while the app half lands).
+    clinic_health = codec.encode_clinic([
+        codec.ClinicAirtimeFact(
+            source=0xB17E, window_min=60, dup_per_mille=400,
+            occupancy_per_mille=12, duty_headroom_s=3500, tx_used_s=100),
+        codec.ClinicSenderFact(
+            source=0xB17E, sender=0x1234, window_min=120,
+            dup_per_mille=250, lost=2, reordered=1, flaps=3),
+        codec.ClinicExchangeFact(
+            source=0xB17E, window_min=60, asked=4, answered=3,
+            median_answer_s=9),
+        codec.ClinicCollisionFact(
+            source=0xB17E, tag=(0x21, 0x33),
+            key_a=bytes.fromhex("0102030405060708"),
+            key_b=bytes.fromhex("a1a2a3a4a5a6a7a8"), last_age_min=7),
+    ], seq=0x0114, origin=0xB17E)
+
     vectors = {
         "pulse": pulse.hex(),
         "sect_sum": sect.hex(),
@@ -73,6 +93,7 @@ def main() -> int:
         "intro": intro.hex(),
         "refresh": refresh.hex(),
         "clinic": clinic.hex(),
+        "clinic_health": clinic_health.hex(),
     }
     out_json = Path(__file__).resolve().parent.parent / "tests" / \
         "golden_vectors.json"

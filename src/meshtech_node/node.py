@@ -76,6 +76,10 @@ def _build(settings, *, bench_no_radio: bool) -> tuple:
         settings, client=sender, use_demo=False,
     )
     brain.external_source = source
+    # MESH HEALTH (HEALTH-DEFINITIONS.md #6, Brett 2026-09-29): one
+    # short tag proving TWO keys on air -> the health book's
+    # collision list (wired even in memory-only mode).
+    source.repeaters.collision_sink = brain.clinic.note_collision
     brain.tx_enabled = settings.feed.tx_enabled   # C2: one source
 
     # MQTT config (Ch5/Ch6): reached defensively - tools and tests

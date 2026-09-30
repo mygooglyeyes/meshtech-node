@@ -57,6 +57,12 @@ class BudgetLimiter:
         self._tx_ms.append((now, tx_ms))
         return tx_ms
 
+    @property
+    def duty_allowance_s_per_hour(self) -> float:
+        """The duty cap in TX-seconds per hour (max_duty_percent) -
+        the health book's duty-headroom denominator."""
+        return self._max_tx_seconds_per_hour
+
     def tx_seconds_last_hour(self, *, now: Optional[float] = None) -> int:
         """Estimated feed TX seconds in the last hour (for PULSE)."""
         now = time.time() if now is None else now

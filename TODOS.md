@@ -1,5 +1,20 @@
 # meshtech-node - TODOS (order matters, top first)
 
+## QUEUED (Brett, 2026-09-29) - trigger: when he says
+## commit/build for the health facts, AFTER the demo. Write the
+## measurement DOCUMENTATION set, two docs: (1) SUMMARY - one
+## simple, plain, NON-WORDY paragraph per measurement, each with
+## its own header, and inside each simple paragraph a reference to
+## the engineering doc in his exact form, e.g. "RSSI measurement
+## (eng.doc para 3.1)"; (2) ENGINEERING - a detailed engineering-
+## style explanation per measurement, numbered paragraphs (3.1
+## style) for the summary to point at. Cover every measurement the
+## cards show: RSSI/SNR margins + spread, traffic share, hops,
+## availability strip, route delays, channel occupancy, duty-cycle
+## headroom, duplicate ratio, loss/reordering, flaps (churn), hash
+## collisions, request-to-answer success, and the four trouble
+## flags.
+
 ## SHIPPED + DEPLOYED + BENCH-HEARD (2026-09-28): THE MESH
 ## CLINIC CHAPTER - node v00.000.061 + v00.000.062 (f770c66 +
 ## 4d1b794 via PRs #1/#2 on main; hilltop manage.sh update 060 ->

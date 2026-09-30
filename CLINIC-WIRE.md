@@ -105,10 +105,17 @@ Flag meanings and thresholds (constants, named in code):
 
 | flag | subject | meaning (exact words shown to people) | detail | trigger |
 |------|---------|----------------------------------------|--------|---------|
-| 1 sig-fail | claimed key prefix | "bytes claiming this key failed signature checks (broken node OR impersonation — the flag does not pick)" | 0 | every failed check |
-| 2 ts-backwards | key prefix (verified ads only) | "advert timestamps went backwards (replay, reset, or drift)" | worst jump, seconds | new stamp < previous best - 300 s |
-| 3 rate storm | key prefix | "packets from this key arriving far faster than advert cadence" | peak, packets/min | >= 20 identity-bearing packets in 60 s |
-| 4 corrupt share | 0 (ALWAYS mesh-wide) | "corrupt packets are X% of heard traffic (band noise or a broken transmitter — never blamed on a sender)" | share, per-mille | >= 10% corrupt over 10 min, >= 20 packets heard in window |
+| 1 sig-fail | claimed key prefix | "signature failures" | 0 | every failed check |
+| 2 ts-backwards | key prefix (verified ads only) | "timestamps backwards" | worst jump, seconds | new stamp < previous best - 300 s |
+| 3 rate storm | key prefix | "rate storm" | peak, packets/min | >= 20 identity-bearing packets in 60 s |
+| 4 corrupt share | 0 (ALWAYS mesh-wide) | "corrupt packets" | share, per-mille | >= 10% corrupt over 10 min, >= 20 packets heard in window |
+
+(Wording shortened with the phone cards, Brett 2026-09-29. The
+evidence behind each name still stands in full: a sig-fail is a
+broken node OR impersonation — the flag does not pick; a ts-backwards
+is replay, reset, or drift; a rate storm is far faster than advert
+Cadence; corrupt packets are band noise or a broken transmitter —
+never blamed on a sender.)
 
 Corrupt packets are shown as mesh-level noise and are NEVER blamed
 on a sender — flag 4's subject is always 0.
@@ -133,6 +140,73 @@ said it. Those tagged facts ride on as second-hand records:
     intro:    class u8, lat_e7 i32 LE, lon_e7 i32 LE,
               name_len u8 + name bytes (<= 24, UTF-8)
 ```
+
+## Record kind 5 — AIRTIME FACT (the mesh's air, as this box counts it)
+
+```
+  source              u16 LE   which box measured this
+  window_min          u16 LE   the REAL length of the counting window
+                               (60 = a full hour; less = partial)
+  dup_per_mille       u16 LE   extra flood copies / all copies heard
+                               (65535 = never counted)
+  occupancy_per_mille u16 LE   heard airtime share of the window
+                               (Semtech formula at our radio settings)
+  duty_headroom_s     u16 LE   OUR TX allowance left in the window
+                               (allowance - sent; 65535 = unknown)
+  tx_used_s           u16 LE   what we actually sent in the window
+```
+
+Payload 12 bytes. Rising duplicates with a FLAT message count = the
+mesh getting noisy, not busier (Brett's reading rule).
+
+## Record kind 6 — SENDER FACT (one sender's behavior)
+
+```
+  source        u16 LE   which box measured this
+  sender        u16 LE   the tag the traffic self-identifies with
+                         (the scope header's 2-byte origin)
+  window_min    u16 LE   the REAL length of the counting window (1440 = a day)
+  dup_per_mille u16 LE   extra copies of this sender's packets
+  lost          u16 LE   seq numbers of this sender we never heard
+  reordered     u16 LE   late arrivals of those numbers
+  flaps         u16 LE   heard -> silent >= 30 min -> heard again
+```
+
+Payload 14 bytes. Anonymous group traffic carries no sender tag and
+never lands here — it counts in kind 5 only. A sequence jump larger
+than 32 means a REBOOTED sender counter: counted as nothing, never
+as loss.
+
+## Record kind 7 — EXCHANGE FACT (asks answered)
+
+```
+  source           u16 LE   which box measured this
+  window_min       u16 LE   the REAL length of the counting window
+  asked            u16 LE   overheard asks on the air
+  answered         u16 LE   those answered within 10 minutes
+  median_answer_s  u16 LE   median ask->answer time (0 = unknown)
+```
+
+Payload 10 bytes. "TCP is not the mesh": door-borne asks never
+score here. An answer counts when the target's data is HEARD back —
+or, for our own answers (our TX never echoes to us), when the burst
+was sent.
+
+## Record kind 8 — COLLISION FACT (one proven hash collision)
+
+```
+  source        u16 LE   which box measured this
+  tag_len       u8       1..3 (the short tag AS HEARD)
+  tag           tag_len bytes
+  key_a         8 bytes  pubkey A's first 8 bytes
+  key_b         8 bytes  pubkey B's first 8 bytes
+  last_age_min  u16 LE   minutes since the pair was last proven
+```
+
+Payload 22..24 bytes. A collision is PROVEN when the same short tag
+has carried two different public keys on air (adverts are signature-
+checked first). A tag that never met an advert proves nothing and is
+never reported.
 
 ## What is folded and what is not
 
@@ -167,6 +241,9 @@ Four stores, all SQLite write-through like the node table already is:
 node charts (strip, signal stats, hop histogram, 24 h counts),
 trouble flags, peer reports, and route delay min/max columns.
 Boot refills all of them. No raw packets are ever stored.
+
+The health records (kinds 5-8) are SESSION-SCOPED by design: their
+counters reset at a restart and are never back-filled from guesses.
 
 Removal ages (a clinic fact is kept exactly as long as its evidence
 is fresh):

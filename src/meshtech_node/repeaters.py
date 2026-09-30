@@ -73,6 +73,11 @@ class RepeaterTable:
     entries: Dict[bytes, RepeaterEntry] = field(default_factory=dict)
     sink: Optional[object] = field(default=None, repr=False,
                                    compare=False)
+    # COLLISION MATRIX (HEALTH-DEFINITIONS.md #6, Brett 2026-09-29):
+    # called as (tag, key_a, key_b) when ONE tag proves TWO keys on
+    # air. Evidence, never blame.
+    collision_sink: Optional[object] = field(default=None, repr=False,
+                                             compare=False)
 
     def observe_tag(self, tag: bytes, *, now: Optional[float] = None,
                     ) -> RepeaterEntry:
@@ -128,6 +133,21 @@ class RepeaterTable:
                 entry.node_class = int(node_class) & 0x3
                 self._sink_entry(entry)     # promotion reaches disk too
                 promoted.append(entry)
+            elif entry is not None and entry.identified \
+                    and entry.pubkey != pubkey:
+                # COLLISION (HEALTH-DEFINITIONS.md #6): the SAME tag
+                # has now carried TWO different keys on air - proof
+                # of a hash collision, counted as evidence.
+                log.warning("hash collision: tag %s carried %s and %s",
+                            tag.hex(),
+                            entry.pubkey.hex()[:16] if entry.pubkey else "?",
+                            pubkey.hex()[:16])
+                if self.collision_sink is not None:
+                    try:
+                        self.collision_sink(tag, entry.pubkey, pubkey)
+                    except Exception:
+                        log.exception("collision sink raised - listener "
+                                      "continues")
         return promoted
 
     def refill_from(self, rows: List[dict]) -> int:

@@ -163,6 +163,13 @@ class RawPacketSource:
                     (self.stats.corrupt + self.stats.malformed) > before)
             except Exception:
                 log.exception("flag sink raised - listener continues")
+            note_air = getattr(self.flag_sink, "note_air", None)
+            if note_air is not None:
+                try:
+                    note_air(len(rx.data), now=rx.recv_ts or 0.0)
+                except Exception:
+                    log.exception("health air note raised - listener "
+                                  "continues")
         return obs
 
     def _parse_packet(self, rx: RxPacket) -> Optional[Observation]:
@@ -197,6 +204,7 @@ class RawPacketSource:
         if frame.payload_type in (PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_GRP_DATA):
             if self.dedupe.is_duplicate(frame.payload_type, frame.payload):
                 self.stats.duplicates += 1
+                self._note_dup(frame.payload)
                 return None
             return self._from_group(rx, frame)
 
@@ -258,6 +266,17 @@ class RawPacketSource:
             log.debug("#scope plaintext type %04x is not scope traffic - "
                       "dropped", data_type)
             return
+        # MESH HEALTH (HEALTH-DEFINITIONS.md #1/#4/#5): the sender's
+        # sequence number is the loss/reordering raw material, and
+        # the ENCRYPTED payload hash seeds later dup attribution.
+        try:
+            header, _ = codec.unpack_header(plaintext[3:])
+            note_scope = getattr(self.flag_sink, "note_scope", None)
+            if note_scope is not None:
+                note_scope(header.origin, header.seq,
+                           payload=frame.payload, now=rx.recv_ts or 0.0)
+        except Exception:
+            log.exception("health scope note raised - listener continues")
         if self.on_heard is not None:
             try:
                 self.on_heard(data_type, plaintext, rx)
@@ -287,6 +306,20 @@ class RawPacketSource:
                 task.add_done_callback(_log_task_death)
         except Exception:
             log.exception("on_scope callback raised - listener continues")
+
+    def _note_dup(self, payload: bytes) -> None:
+        """One extra flood copy: the health book attributes it to a
+        sender only when the first copy's identity is remembered
+        (never guessed)."""
+        if self.flag_sink is None:
+            return
+        note_dup = getattr(self.flag_sink, "note_dup", None)
+        if note_dup is None:
+            return
+        try:
+            note_dup(payload, now=0.0)
+        except Exception:
+            log.exception("health dup note raised - listener continues")
 
     def _from_advert(self, rx: RxPacket, frame: FrameParts) -> Optional[Observation]:
         if not verify_advert_signature(frame.payload):
@@ -347,6 +380,7 @@ class RawPacketSource:
             return None
         if self.dedupe.is_duplicate(frame.payload_type, frame.payload):
             self.stats.duplicates += 1
+            self._note_dup(frame.payload)
             return None
         self.stats.decoded += 1
         self._offer_advert_promotion(info)
