@@ -1,7 +1,12 @@
 # meshtech-node - TODOS (order matters, top first)
 
-## QUEUED (Brett, 2026-09-29) - trigger: when he says
-## commit/build for the health facts, AFTER the demo. Write the
+## DONE 2026-09-29 (trigger: Brett's commit word after the
+## demo; committed as v064 with the duplicate-ratio fix - his
+## rule: the share of everything heard) - the documentation set:
+## MEASUREMENTS.md (the plain summary) + MEASUREMENTS-ENG.md
+## ("eng.doc", the numbered engineering detail). The fix: the old
+## ratio double-counted the repeats (read 22% where the rule
+## gives 29%). Original spec (Brett): Write the
 ## measurement DOCUMENTATION set, two docs: (1) SUMMARY - one
 ## simple, plain, NON-WORDY paragraph per measurement, each with
 ## its own header, and inside each simple paragraph a reference to

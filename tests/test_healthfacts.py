@@ -28,14 +28,19 @@ def test_airtime_fact_counts_duplicates_occupancy_and_duty():
     tracker = HealthTracker(0xB17E,
                             airtime_ms_fn=lambda n: 100.0,
                             duty_fn=lambda now: (45, 3600))
-    tracker.note_frame(50, now=T0)
-    tracker.note_frame(50, now=T0)
-    tracker.note_dup(now=T0)          # one extra flood copy
+    # Production feeding (rawsource): EVERY heard copy passes
+    # note_frame - including repeats - and a repeat also gets
+    # note_dup. The ratio is the share of everything heard.
+    tracker.note_frame(50, now=T0)    # copy 1
+    tracker.note_frame(50, now=T0)    # copy 2
+    tracker.note_frame(50, now=T0)    # copy 3 - a repeat of copy 1
+    tracker.note_dup(now=T0)          # the repeat's verdict
     facts = _by_kind(tracker.records(T0 + 60), codec.ClinicAirtimeFact)
     assert len(facts) == 1
     f = facts[0]
     assert f.window_min == 1          # honest partial window (a minute)
-    assert f.dup_per_mille == 333     # 1 dup of 3 copies
+    assert f.dup_per_mille == 333     # 1 repeat of 3 copies heard
+                                     # (never 1/4: no double-count)
     assert f.tx_used_s == 45
     assert f.duty_headroom_s == 3555  # allowance minus sent
 

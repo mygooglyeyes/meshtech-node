@@ -9,11 +9,13 @@ page says so and the phone keeps its "not measured yet" gap.
 ## 1. Duplicate ratio
 
 The same flood packet arrives several times - once per repeater path.
-Per sender, per day:
+The share of everything heard that is repeats (Brett's pick
+2026-09-29):
 
-    extra copies heard / packets heard once
+    repeat copies heard / all copies heard
 
-Example: 100 packets, 40 extra copies = 40%.
+Example: 100 different packets plus 40 repeat copies = 40 repeats
+among 140 copies heard = 29% duplicates.
 Reads as: a RISING ratio with a FLAT message count = the mesh getting
 noisy, not busier (Brett's words).
 

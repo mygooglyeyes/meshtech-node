@@ -3,7 +3,9 @@
 The mesh-health numbers the clinic wire carries, minted ONLY from
 what the box can honestly count:
 
-  - duplicate ratio (extra flood copies / packets, mesh + per sender)
+  - duplicate ratio (extra copies as a share of ALL copies heard,
+    mesh + per sender - Brett's rule 2026-09-29: the share of
+    everything heard)
   - channel occupancy (heard airtime share of the window)
   - duty-cycle headroom (our TX allowance minus what we sent)
   - per-sender loss / reordering (clinic sequence gaps) and flaps
@@ -222,8 +224,13 @@ class HealthTracker:
         if minutes >= 1 or mesh:
             frames = mesh.get("frames", 0.0)
             dup = mesh.get("dup", 0.0)
-            total = frames + dup
-            dup_pm = _per_mille(dup, total) if total else codec.NUM_UNKNOWN
+            # Brett's rule (2026-09-29): the ratio is the share of
+            # EVERYTHING HEARD - a repeat copy is itself a heard
+            # frame, so the denominator is [frames], never frames+dup
+            # (that double-counted the repeats and read 22% where
+            # the rule gives 29%).
+            dup_pm = _per_mille(dup, frames) if frames else \
+                codec.NUM_UNKNOWN
             air_ms = mesh.get("air_ms", 0.0)
             span_ms = minutes * 60 * 1000
             occ_pm = _per_mille(air_ms, span_ms) if span_ms else \
@@ -248,6 +255,9 @@ class HealthTracker:
             minutes, counts = window.read(now)
             if not counts:
                 continue
+            # [heard] counts this sender's DISTINCT packets (scope
+            # fires past the flood dedupe); adding [dup] gives every
+            # copy of his traffic = the share of everything heard.
             total = counts.get("heard", 0.0) + counts.get("dup", 0.0)
             dup_pm = _per_mille(counts.get("dup", 0.0), total) \
                 if total else codec.NUM_UNKNOWN

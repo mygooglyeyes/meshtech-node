@@ -148,7 +148,8 @@ said it. Those tagged facts ride on as second-hand records:
   window_min          u16 LE   the REAL length of the counting window
                                (60 = a full hour; less = partial)
   dup_per_mille       u16 LE   extra flood copies / all copies heard
-                               (65535 = never counted)
+                               (the share of everything heard;
+                               65535 = never counted)
   occupancy_per_mille u16 LE   heard airtime share of the window
                                (Semtech formula at our radio settings)
   duty_headroom_s     u16 LE   OUR TX allowance left in the window
@@ -166,7 +167,9 @@ mesh getting noisy, not busier (Brett's reading rule).
   sender        u16 LE   the tag the traffic self-identifies with
                          (the scope header's 2-byte origin)
   window_min    u16 LE   the REAL length of the counting window (1440 = a day)
-  dup_per_mille u16 LE   extra copies of this sender's packets
+  dup_per_mille u16 LE   extra copies / all copies of this
+                         sender's packets (the share of
+                         everything heard, per sender)
   lost          u16 LE   seq numbers of this sender we never heard
   reordered     u16 LE   late arrivals of those numbers
   flaps         u16 LE   heard -> silent >= 30 min -> heard again
