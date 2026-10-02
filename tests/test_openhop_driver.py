@@ -43,7 +43,7 @@ CTL_TOKEN = "ctl-token-1"
 # the SAME config the server holds - exactly like the lab, where both
 # sides are set to the same mesh settings.
 MESH = dict(frequency=910525000, bandwidth=62500, spreading_factor=7,
-            coding_rate=5, tx_power=20, sync_word=0x12, preamble_length=32)
+            coding_rate=5, tx_power=21, sync_word=0x12, preamble_length=32)
 
 
 class FakeHal:

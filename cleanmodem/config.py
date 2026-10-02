@@ -25,6 +25,10 @@ from typing import Dict, Optional
 # Each preset describes one known board. `dio2_rf_switch` means the
 # chip's DIO2 pin drives the antenna RF switch in silicon (no MCU pin
 # needed); `dio3_tcxo` is the TCXO voltage in volts (0 = don't touch).
+# Board calibration facts ride along too: `rssi_lna_offset_db` is the
+# frontend LNA lift (dB) the RSSI/noise math backs out on that board
+# (noisefloor_2.md, v0.0.066: a PiMesh frontend lifts everything the
+# chip hears by 14 dB). Missing key = 0.0 = raw chip math.
 
 PIN_PRESETS: Dict[str, dict] = {
     # The working map (proven on air on the PiMesh-1W v2 by openHop):
@@ -44,6 +48,7 @@ PIN_PRESETS: Dict[str, dict] = {
         "dio2_rf_switch": True,
         "dio3_tcxo": 1.8,
         "txen": -1, "rxen": -1, "lna": -1,
+        "rssi_lna_offset_db": 14.0,   # PiMesh 1W v2 LNA lift (noisefloor_2.md)
     },
     # The rough-draft map for boards with an external LNA + RF switch
     # front end driven by MCU pins (rxtx switches TX/RX lines, lna gates
@@ -57,6 +62,7 @@ PIN_PRESETS: Dict[str, dict] = {
         "dio2_rf_switch": False,
         "dio3_tcxo": 0.0,
         "txen": 22, "rxen": -1, "lna": 23,
+        "rssi_lna_offset_db": 14.0,   # PiMesh LNA lift (noisefloor_2.md)
     },
 }
 
@@ -83,7 +89,8 @@ class ModemConfig:
     demo_interval: float = 10.0
     # Radio parameters (defaults = the live mesh, verified on air).
     frequency_hz: int = 910525000
-    tx_power_dbm: int = 20
+    # v0.0.066 (Brett 2026-09-30): send power 20 -> 21 dBm.
+    tx_power_dbm: int = 21
     spreading_factor: int = 7
     coding_rate: int = 5            # CR 4/5
     bandwidth_hz: int = 62500

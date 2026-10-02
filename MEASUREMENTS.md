@@ -17,8 +17,10 @@ the usual value and the wobble (+-) beside it.
 
 The RSSI measurement (eng.doc para 3.1) says how strong the node's
 signal is as this box hears it, in dBm: usual value, best and worst
-ever heard, and the wobble. The card draws it on a fixed -120 to
--70 dBm scale. Signal is not distance — never read it as metres.
+ever heard, and the wobble. On PiMesh boxes the modem first takes the
+board's 14 dB amplifier lift back out, so the numbers are true
+signal, not the amplified version. The card draws it on a fixed -120
+to -70 dBm scale. Signal is not distance — never read it as metres.
 
 ## Traffic share
 

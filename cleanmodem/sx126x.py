@@ -111,8 +111,25 @@ TCXO_VOLTAGE_CODES = {1.6: 0x00, 1.7: 0x01, 1.8: 0x02, 2.2: 0x03,
 # SX1262 PA config for the 22 dBm high-power table
 PA_CONFIG_SX1262 = bytes([0x04, 0x07, 0x00, 0x01])
 
+# SetTxParams ramp code (datasheet §13.4.5; verified against the
+# reference driver's ramp table: openhop_core LoRaRF/SX126x.py
+# PA_RAMP_80U = 0x03). v0.0.066 (Brett 2026-09-30): 200 us -> 80 us.
+PA_RAMP_80U = 0x03
+
 # TCXO needs a settle delay after powering up (datasheet: 5 ms typical)
 TCXO_SETTLE_S = 0.005
+
+# ─── RX gain chain (datasheet §15.1; noisefloor_2.md, v0.0.066) ────
+# REG_RX_GAIN picks the receiver's gain step: 0x94 = standard
+# (power-saving) gain, 0x96 = boosted. Register and values verified
+# against the reference driver: openhop_core
+# src/pymc_core/hardware/lora/LoRaRF/SX126x.py (REG_RX_GAIN =
+# 0x08AC, POWER_SAVING_GAIN = 0x94, BOOSTED_GAIN = 0x96). The
+# standard step is the right match for boards whose frontend LNA
+# does the amplifying (the PiMesh 1W v2): chip-side boost only
+# pushes an already-lifted input toward saturation.
+REG_RX_GAIN = 0x08AC
+VAL_RX_GAIN_STANDARD = 0x94
 
 
 def _tcxo_ctrl_params(voltage: float) -> list[int]:
@@ -404,9 +421,17 @@ def _snr_signed(raw: int) -> float:
     return (value - 256 if value > 127 else value) / 4.0
 
 
-def _rssi_dbm(raw: int) -> int:
-    """SX126x packet RSSI: -0.5 dBm per LSB."""
-    return int(round(raw / -2.0))
+def _rssi_dbm(raw: int, lna_offset_db: float = 0.0) -> int:
+    """SX126x packet RSSI: -0.5 dBm per LSB, minus the board's LNA lift.
+
+    v0.0.066 (noisefloor_2.md, Brett 2026-09-30): boards whose
+    frontend LNA lifts everything the chip hears (PiMesh 1W v2 =
+    14 dB) pass their board offset here so telemetry reports the
+    pre-LNA value; any other hardware passes nothing and keeps the
+    raw chip math. The offset is a PER-BOARD FACT carried in the pin
+    preset - never a guessed constant bolted onto every radio.
+    """
+    return int(round(raw / -2.0 - lna_offset_db))
 
 
 def _bw_register(bandwidth_hz: int) -> int:
@@ -451,13 +476,19 @@ class SX126xRadio(ThreadedHal):
 
     BUSY_TIMEOUT_S = 1.0
     BUSY_POLL_S = 0.0002
+    # v0.0.066 (Brett 2026-09-30): AGC reset every 4 s - the SX126x
+    # AGC can wedge at the wrong gain after a strong signal and leave
+    # the receiver deaf; the only known fix is periodically restarting
+    # reception (RadioLib issue 521). MeshCore ships the same feature
+    # as `agc.reset.interval`, community standard 4.
+    AGC_RESET_S = 4.0
     TX_TIMEOUT_S = 2.0               # SetTx hardware timeout (SF7 mesh)
     CAD_TIMEOUT_S = 0.15
     IRQ_WAIT_S = 0.05                # idle edge-wait slice
     POLL_IRQ_S = 0.05                # polling-mode flag-poll interval
 
     def __init__(self, pins: dict, *, frequency_hz: int = 910525000,
-                 tx_power_dbm: int = 20, spreading_factor: int = 7,
+                 tx_power_dbm: int = 21, spreading_factor: int = 7,
                  coding_rate: int = 5, bandwidth_hz: int = 62500,
                  sync_word: int = 0x12, preamble_length: int = 32,
                  spi_bus: int = 0, spi_device: int = 0,
@@ -468,6 +499,9 @@ class SX126xRadio(ThreadedHal):
                  gpio_backend: str = "auto") -> None:
         super().__init__()
         self._pins = dict(pins)
+        # Board LNA lift (dB) backed out of every RSSI/noise figure
+        # (v0.0.066). Rides in the pin preset; 0.0 = raw chip math.
+        self._lna_offset_db = float(pins.get("rssi_lna_offset_db", 0.0))
         self._radio = {
             "frequency_hz": frequency_hz,
             "tx_power_dbm": tx_power_dbm,
@@ -549,6 +583,13 @@ class SX126xRadio(ThreadedHal):
         # stray buffer-pointer write.
         self._write_register(SYNC_WORD_REGISTER,
                              _sync_word_bytes(self._radio["sync_word"]))
+        # v0.0.066 (noisefloor_2.md): pin the RX gain chain to the
+        # standard step (0x94). It is also the chip's power-on
+        # default, so this is a PIN, not a behavior change - it makes
+        # "no chip-side boost, the board's LNA does the lifting"
+        # explicit, and a future boosted-gain experiment can't leave
+        # it behind by accident.
+        self._write_register(REG_RX_GAIN, bytes([VAL_RX_GAIN_STANDARD]))
         self._cmd(OP_SET_REGULATOR_MODE, [0x01])    # DC-DC converter
         self._cmd(OP_SET_PA_CONFIG, list(PA_CONFIG_SX1262))
         self._cmd(OP_SET_BUFFER_BASE_ADDRESS, [0x00, 0x00])
@@ -663,9 +704,10 @@ class SX126xRadio(ThreadedHal):
                       [(pre >> 8) & 0xFF, pre & 0xFF, 0x00, len(data),
                        0x01, 0x00])
             self._cmd(OP_WRITE_BUFFER, [0x00] + list(data))
-            # SetTxParams: power (dBm, SX1262 range -9..22) + ramp 200 us.
+            # SetTxParams: power (dBm, SX1262 range -9..22) + 80 us ramp.
             self._cmd(OP_SET_TX_PARAMS,
-                      [max(-9, min(22, self._radio["tx_power_dbm"])), 0x04])
+                      [max(-9, min(22, self._radio["tx_power_dbm"])),
+                       PA_RAMP_80U])
             self._clear_irq(IRQ_ALL)
             started = time.monotonic()
             self._cmd(OP_SET_TX, list(_timeout_steps(self.TX_TIMEOUT_S)))
@@ -733,9 +775,13 @@ class SX126xRadio(ThreadedHal):
             self._hw_enter_rx()
 
     def _hw_noise(self) -> float:
-        """Instantaneous RSSI of the channel (dBm) as the noise floor."""
+        """Instantaneous RSSI of the channel (dBm) as the noise floor.
+
+        v0.0.066: minus the board's LNA lift (see _rssi_dbm), so on
+        PiMesh hardware the noise floor reports the pre-LNA value.
+        """
         result = self._read_cmd(OP_GET_RSSI_INST, 1)
-        return result[0] / -2.0
+        return result[0] / -2.0 - self._lna_offset_db
 
     def _hw_status(self) -> RadioStatus:
         # v0.0.183: the noise field was read from self.noise, which no
@@ -797,6 +843,7 @@ class SX126xRadio(ThreadedHal):
     # ── worker thread: FIFO work + IRQ edges + watchdog ───────────────
     def _worker(self) -> None:
         last_probe = time.monotonic()
+        last_agc_reset = time.monotonic()
         while not self._stop_flag:
             ran_work = False
             while True:
@@ -848,6 +895,22 @@ class SX126xRadio(ThreadedHal):
                     log.error("IRQ handling failed: %s", exc)
                 except Exception as exc:            # noqa: BLE001
                     log.error("radio thread error: %s", exc)
+            # v0.0.066: the AGC reset bounce (see AGC_RESET_S). Only
+            # when we are safely listening - _in_rx is False during TX
+            # and the CAD dance, and every hardware step runs on THIS
+            # thread, so the bounce can never land mid-packet or
+            # mid-send. Cost: a few ms deaf each bounce.
+            if (self._in_rx and self._spi is not None
+                    and time.monotonic() - last_agc_reset
+                    >= self.AGC_RESET_S):
+                last_agc_reset = time.monotonic()
+                try:
+                    self._cmd(OP_SET_STANDBY, [0x00])
+                    self._hw_enter_rx()
+                except RadioHwError as exc:
+                    log.error("AGC reset bounce failed: %s", exc)
+                except Exception as exc:            # noqa: BLE001
+                    log.error("radio thread error: %s", exc)
             if time.monotonic() - last_probe >= self.WATCHDOG_INTERVAL_S:
                 last_probe = time.monotonic()
                 self._watchdog()
@@ -878,9 +941,9 @@ class SX126xRadio(ThreadedHal):
             bytes([OP_READ_BUFFER, start & 0xFF, 0x00]) + bytes(length))
         data = bytes(raw[3:3 + length])
         pkt_status = self._read_cmd(OP_GET_PACKET_STATUS, 3)
-        rssi = _rssi_dbm(pkt_status[0])
+        rssi = _rssi_dbm(pkt_status[0], self._lna_offset_db)
         snr = _snr_signed(pkt_status[1])
-        signal_rssi = _rssi_dbm(pkt_status[2])
+        signal_rssi = _rssi_dbm(pkt_status[2], self._lna_offset_db)
         self.rx_count += 1
         self.last_rssi = rssi
         self.last_snr = snr

@@ -60,7 +60,10 @@ says so.
 ## 3. RSSI measurement
 
 3.1 What it measures. The received signal strength of a node's
-frames as THIS box hears them, in dBm.
+frames as THIS box hears them, in dBm. On PiMesh hardware the modem
+first backs out the board's 14 dB frontend-LNA lift (noisefloor_2.md,
+v0.0.066), so the figure is the pre-LNA value - about 14 dB lower
+than an uncorrected driver would report for the same signal.
 
 3.2 How it is collected. Exactly like SNR (para 2.2): EWMA, best,
 worst, and standard deviation per node chart.
