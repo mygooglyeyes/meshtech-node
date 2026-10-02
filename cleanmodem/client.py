@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import socket
 import time
 from typing import Awaitable, Callable, Optional, Tuple, Union
@@ -30,6 +31,18 @@ MAX_BUFFER = 65_536
 # ~32 s (hilltop 2026-09-14: down/2s/up flapping, TX landing in the
 # gap failed). PING well inside that window keeps the session alive.
 PING_INTERVAL_S = 15.0
+# Host-side LBT (Brett, 2026-10-02: the modem's politeness is coming
+# out, so every sender keeps its own manners). The openhop family's
+# recipe, numbers verified against the reference source (openhop_core
+# kiss_modem_wrapper: LBT_RETRY_DELAYS_MS (120, 240, 360) ms,
+# LBT_MAX_WAIT_MS 4000): ask the modem if the channel is busy, back
+# off a random pick of the three slots until clear, transmit anyway
+# at the budget. A busy check that fails NEVER blocks the send.
+LBT_RETRY_DELAYS_MS = (120, 240, 360)
+LBT_MAX_WAIT_S = 4.0
+# The reference's own TX-path advice (its get_airtime note): keep
+# command timeouts SHORT on the send path.
+LBT_PROBE_TIMEOUT_S = 2.0
 
 
 class ModemClient:
@@ -46,6 +59,9 @@ class ModemClient:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._reader: Optional[asyncio.StreamReader] = None
         self._tx_replies: "asyncio.Queue[bool]" = asyncio.Queue()
+        # v0.0.069: CAD_RESP round-trips resolve here (the host-side
+        # LBT's "is the channel busy?" question to the modem).
+        self._cad_reply: "asyncio.Queue[bool]" = asyncio.Queue()
         self._tx_gate = asyncio.Lock()
         self._config_reply: "asyncio.Queue[bytes]" = asyncio.Queue()
         # v0.0.180: NOISE_REQ round-trips resolve on NOISE_RESP.
@@ -121,6 +137,7 @@ class ModemClient:
         self._reader = None
         # A dead link must not strand a waiting sender.
         self._tx_replies.put_nowait(False)
+        self._cad_reply.put_nowait(False)
         self._config_reply.put_nowait(b"")
         if writer is not None:
             try:
@@ -233,13 +250,16 @@ class ModemClient:
                             frames.parse_noise_payload_or_none(payload))
                     except frames.FrameError:
                         continue
+                elif cmd == frames.CMD_CAD_RESP:
+                    self._cad_reply.put_nowait(
+                        bool(payload[0]) if payload else False)
                 elif cmd == frames.CMD_OBSERVER_STATE:
                     self.observer_count = (payload[0] if payload else 0)
                 elif cmd == frames.CMD_ERROR:
                     log.warning("modem error frame: 0x%02X",
                                 payload[0] if payload else 0)
-                # CONFIG_RESP / STATUS_RESP / PONG: the bot issues none
-                # of those requests today, so they are ignored here.
+                # STATUS_RESP / PONG: nobody issues those requests
+                # today, so they are ignored here.
 
     # ── TX / config / noise ──────────────────────────────────────────
     async def configure(self, config_payload: bytes) -> Optional[bytes]:
@@ -300,6 +320,58 @@ class ModemClient:
                 log.debug("NOISE_REQ failed: %s", exc)
                 return None
 
+    async def _channel_busy(self) -> bool:
+        """One CAD_REQUEST; resolves on CAD_RESP (True = busy). The
+        queue is drained first so only THIS probe can answer."""
+        writer = self._writer
+        if writer is None or not self.connected:
+            raise ConnectionError("modem link down")
+        while not self._cad_reply.empty():
+            try:
+                self._cad_reply.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        writer.write(frames.build_frame(frames.CMD_CAD_REQUEST, b""))
+        await asyncio.wait_for(writer.drain(), LBT_PROBE_TIMEOUT_S)
+        return await asyncio.wait_for(self._cad_reply.get(),
+                                      LBT_PROBE_TIMEOUT_S)
+
+    async def _wait_clear_channel(self) -> list[float]:
+        """Host-side LBT before TX_REQUEST (the openhop recipe, see
+        LBT_RETRY_DELAYS_MS above). Returns the backoff delays waited.
+
+        Transmit anyway at the budget, and transmit anyway when the
+        busy check itself fails (the reference's exact behavior - a
+        broken thermometer must never silence a station)."""
+        if LBT_MAX_WAIT_S <= 0:
+            return []
+        backoffs: list[float] = []
+        total = 0.0
+        while total < LBT_MAX_WAIT_S:
+            try:
+                busy = await self._channel_busy()
+            except Exception as exc:      # noqa: BLE001
+                log.debug("channel busy check failed (%s) - sending", exc)
+                return backoffs
+            if not busy:
+                break
+            remaining = LBT_MAX_WAIT_S - total
+            delay = min(random.choice(LBT_RETRY_DELAYS_MS) / 1000.0,
+                        remaining)
+            backoffs.append(delay)
+            total += delay
+            await asyncio.sleep(delay)
+        else:
+            log.warning("LBT max wait (%gs) reached - channel still busy, "
+                        "transmitting anyway", LBT_MAX_WAIT_S)
+        if backoffs:
+            # The repeater's own log line format - one grep shows both
+            # senders' manners.
+            log.info("LBT: %d attempts, %.0fms delay, backoffs=%s",
+                     len(backoffs), sum(backoffs) * 1000.0,
+                     [round(b * 1000.0) for b in backoffs])
+        return backoffs
+
     async def send(self, data: bytes) -> bool:
         """One TX_REQUEST; resolves on TX_DONE (True) / TX_FAIL (False)."""
         writer = self._writer
@@ -309,6 +381,9 @@ class ModemClient:
             return False
         # One in-flight TX at a time (the radio serializes anyway).
         async with self._tx_gate:
+            # Host-side LBT first (Brett, 2026-10-02): listen, then
+            # talk - the modem sends plain now.
+            await self._wait_clear_channel()
             # Drain stale replies (a late answer from a previous TX, or
             # the False a reconnect cycle pushed) so this send can only
             # be answered by ITS modem response.
