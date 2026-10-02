@@ -116,6 +116,11 @@ PA_CONFIG_SX1262 = bytes([0x04, 0x07, 0x00, 0x01])
 # PA_RAMP_80U = 0x03). v0.0.066 (Brett 2026-09-30): 200 us -> 80 us.
 PA_RAMP_80U = 0x03
 
+# Wire "no value" sentinel for the status frame's noise field - the
+# same number frames.NOISE_NO_VALUE carries (pinned in tests).
+# v0.0.067: unmeasured noise answers with a GAP, never a constant.
+NOISE_X10_NO_VALUE = -32768
+
 # TCXO needs a settle delay after powering up (datasheet: 5 ms typical)
 TCXO_SETTLE_S = 0.005
 
@@ -482,6 +487,19 @@ class SX126xRadio(ThreadedHal):
     # reception (RadioLib issue 521). MeshCore ships the same feature
     # as `agc.reset.interval`, community standard 4.
     AGC_RESET_S = 4.0
+    # v0.0.067 (Brett 2026-10-01): the noise floor is MEASURED the way
+    # the reference driver measures it (openhop_core sx1262_wrapper
+    # ._sample_noise_floor - the method behind the steady numbers the
+    # old stack showed): sample during radio-quiet moments, reject
+    # spikes, average a batch into a rolling floor. The v0.0.066
+    # single raw snapshot per 5-minute poll bounced with every chirp.
+    NOISE_SAMPLES = 20          # accepted samples per rolling batch
+    NOISE_SPIKE_DB = 10.0       # reject samples above floor + this
+    NOISE_QUIET_S = 0.5         # quiet time after any packet activity
+    NOISE_FLOOR_MIN = -150.0    # clamp on the batch average
+    NOISE_FLOOR_MAX = -50.0
+    NOISE_BOOTSTRAP_LO = -150.0  # bootstrap acceptance window
+    NOISE_BOOTSTRAP_HI = -30.0
     TX_TIMEOUT_S = 2.0               # SetTx hardware timeout (SF7 mesh)
     CAD_TIMEOUT_S = 0.15
     IRQ_WAIT_S = 0.05                # idle edge-wait slice
@@ -502,6 +520,12 @@ class SX126xRadio(ThreadedHal):
         # Board LNA lift (dB) backed out of every RSSI/noise figure
         # (v0.0.066). Rides in the pin preset; 0.0 = raw chip math.
         self._lna_offset_db = float(pins.get("rssi_lna_offset_db", 0.0))
+        # v0.0.067: rolling noise floor (see _sample_noise_floor).
+        # None = not yet measured: an honest gap, never a constant.
+        self._noise_floor: Optional[float] = None
+        self._noise_sum = 0.0
+        self._noise_count = 0
+        self._last_packet_activity = 0.0
         self._radio = {
             "frequency_hz": frequency_hz,
             "tx_power_dbm": tx_power_dbm,
@@ -688,6 +712,7 @@ class SX126xRadio(ThreadedHal):
     def _hw_tx(self, data: bytes) -> TxResult:
         if len(data) > 255:
             return TxResult(ok=False, error="payload too big")
+        self._last_packet_activity = time.monotonic()   # quiet guard
         pins = self._pins
         # Front-end to the transmit path BEFORE the packet goes out.
         if pins.get("lna", -1) >= 0:
@@ -774,14 +799,53 @@ class SX126xRadio(ThreadedHal):
             self._in_rx = False
             self._hw_enter_rx()
 
-    def _hw_noise(self) -> float:
-        """Instantaneous RSSI of the channel (dBm) as the noise floor.
+    def _sample_noise_floor(self) -> None:
+        """One rolling noise-floor sample (the reference's method).
 
-        v0.0.066: minus the board's LNA lift (see _rssi_dbm), so on
-        PiMesh hardware the noise floor reports the pre-LNA value.
+        v0.0.067 (Brett 2026-10-01): mirrors openhop_core's
+        sx1262_wrapper._sample_noise_floor - the method behind the
+        steady numbers the old stack showed. Samples only when the
+        radio is quiet (no packet activity in NOISE_QUIET_S), rejects
+        spikes (anything NOISE_SPIKE_DB above the current floor =
+        someone talking), and averages NOISE_SAMPLES accepted reads
+        into the rolling floor. The v0.0.066 single raw snapshot per
+        5-minute poll bounced with every chirp on the air - the
+        thermometer changed, not the air.
         """
-        result = self._read_cmd(OP_GET_RSSI_INST, 1)
-        return result[0] / -2.0 - self._lna_offset_db
+        if self._spi is None or not self._in_rx:
+            return
+        if time.monotonic() - self._last_packet_activity < self.NOISE_QUIET_S:
+            return
+        try:
+            raw = self._read_cmd(OP_GET_RSSI_INST, 1)
+        except Exception as exc:            # noqa: BLE001
+            log.debug("noise sample failed: %s", exc)
+            return
+        value = raw[0] / -2.0 - self._lna_offset_db
+        if self._noise_floor is None:
+            # Bootstrap: any sane reading seeds the first floor.
+            if not self.NOISE_BOOTSTRAP_LO < value < self.NOISE_BOOTSTRAP_HI:
+                return
+        elif value >= self._noise_floor + self.NOISE_SPIKE_DB:
+            return                          # spike: someone is talking
+        self._noise_sum += value
+        self._noise_count += 1
+        if self._noise_count >= self.NOISE_SAMPLES:
+            avg = self._noise_sum / self.NOISE_SAMPLES
+            self._noise_floor = min(self.NOISE_FLOOR_MAX,
+                                    max(self.NOISE_FLOOR_MIN, avg))
+            self._noise_sum = 0.0
+            self._noise_count = 0
+
+    def _hw_noise(self) -> Optional[float]:
+        """Rolling noise floor (dBm) - pre-LNA value on PiMesh boards.
+
+        v0.0.067: the measured rolling floor (see
+        _sample_noise_floor), or None until the first batch fills -
+        an honest gap, never a plausible constant (the v0.0.183
+        frozen -105 lesson).
+        """
+        return self._noise_floor
 
     def _hw_status(self) -> RadioStatus:
         # v0.0.183: the noise field was read from self.noise, which no
@@ -795,7 +859,8 @@ class SX126xRadio(ThreadedHal):
             crc_errors=self.crc_errors,
             last_rssi=self.last_rssi,
             last_snr_x10=int(round(self.last_snr * 10)),
-            noise_x10=int(round(self._hw_noise() * 10)),
+            noise_x10=(NOISE_X10_NO_VALUE if self._noise_floor is None
+                       else int(round(self._noise_floor * 10))),
             radio_state=1 if self._rx_mode else 0,
             hal_alive=True,
             irq_polls=self.irq_polls,
@@ -911,6 +976,10 @@ class SX126xRadio(ThreadedHal):
                     log.error("AGC reset bounce failed: %s", exc)
                 except Exception as exc:            # noqa: BLE001
                     log.error("radio thread error: %s", exc)
+            # v0.0.067: keep the rolling noise floor fed (the sampler
+            # self-guards: only samples while the radio is genuinely
+            # quiet, see _sample_noise_floor).
+            self._sample_noise_floor()
             if time.monotonic() - last_probe >= self.WATCHDOG_INTERVAL_S:
                 last_probe = time.monotonic()
                 self._watchdog()
@@ -920,6 +989,8 @@ class SX126xRadio(ThreadedHal):
         """DIO1 fired: fetch IRQ flags, drain a packet if one arrived."""
         status = self._read_cmd(OP_GET_IRQ_STATUS, 2)
         irq = (status[0] << 8) | status[1]
+        if irq & (IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_HEADER_ERR):
+            self._last_packet_activity = time.monotonic()   # quiet guard
         if not irq & (IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_TIMEOUT | IRQ_HEADER_ERR):
             if not irq & IRQ_TX_DONE:
                 self._clear_irq(irq if irq else IRQ_ALL)

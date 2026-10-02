@@ -56,7 +56,10 @@ class RadioStatus:
     crc_errors: int = 0
     last_rssi: int = -100
     last_snr_x10: int = 0
-    noise_x10: int = -1050
+    # v0.0.067: the default is the wire NO-VALUE sentinel (-32768),
+    # not a plausible-looking -105.0 - the frozen -105 line hid in
+    # exactly this default (v0.0.183 lesson). Unset noise = a gap.
+    noise_x10: int = -32768
     radio_state: int = 1      # 1 = RX (the modem's steady state)
     hal_alive: bool = True
     # v0.0.155 RX-deafness diagnostics (hilltop): poll/edge counts and
@@ -89,8 +92,9 @@ class RadioHal:
         """True = channel busy. 0/0 thresholds = the configured pair."""
         raise NotImplementedError
 
-    async def noise(self) -> float:
-        """Instantaneous noise floor in dBm."""
+    async def noise(self) -> Optional[float]:
+        """Rolling noise floor in dBm, or None when not yet measured
+        (honest gap, never a plausible constant)."""
         raise NotImplementedError
 
     async def status(self) -> RadioStatus:
@@ -221,7 +225,7 @@ class ThreadedHal(RadioHal):
         return await self._submit(
             lambda: self._hw_cad(det_peak, det_min))
 
-    async def noise(self) -> float:
+    async def noise(self) -> Optional[float]:
         return await self._submit(self._hw_noise)
 
     async def status(self) -> RadioStatus:
@@ -317,7 +321,7 @@ class ThreadedHal(RadioHal):
     def _hw_cad(self, det_peak: int, det_min: int) -> bool:
         raise NotImplementedError
 
-    def _hw_noise(self) -> float:
+    def _hw_noise(self) -> Optional[float]:
         raise NotImplementedError
 
     def _hw_status(self) -> RadioStatus:
