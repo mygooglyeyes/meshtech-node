@@ -130,3 +130,12 @@ The corrupt packets flag (eng.doc para 18.1) counts windows where
 10% or more of the packets heard were corrupt. It is always
 mesh-wide: band noise or a broken transmitter, never blamed on a
 sender.
+
+## Noise floor
+
+The noise floor (eng.doc para 20.1) says how loud the channel sits
+when nobody is talking, in dBm. The box measures it only in quiet
+moments and averages the last 20 kept readings, so the line stays
+steady instead of jumping with every stray chirp. A gap means
+"not measured yet" — never a made-up number. On PiMesh boxes the
+board's 14 dB amplifier lift is taken back out first, like RSSI.

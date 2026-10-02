@@ -348,3 +348,31 @@ expires 30 days after its most recent event; the flags of a
 forgotten node die with it.
 
 19.3 A flag never says who is "bad" — it says what was measured.
+
+## 20. Noise floor measurement
+
+20.1 What it measures. How loud this box's channel sits when
+nobody is transmitting, in dBm. It is the BOX's own receiver
+speaking — not any node's number, and not "the atmosphere".
+
+20.2 How it is collected. The modem samples the receiver only in
+radio-quiet moments (no packet in the last half second), throws
+out any sample more than 10 dB above the running floor (someone
+is talking), and averages the last 20 kept samples into a rolling
+floor. Every 5-minute reading records that rolling number, so the
+line moves with real conditions instead of jumping with every
+stray chirp (the reference driver's proven method, mirrored in
+cleanmodem v0.0.067). Until the first batch fills, the reading is
+NO VALUE — a gap, never a plausible constant.
+
+20.3 Wire and storage. One point every 5 minutes, 24 hours kept
+(288 points). A missing value is stored as a gap, and the wire
+carries the NO-VALUE sentinel (-32768 in noise×10). Same rule as
+every measurement here: a gap beats a guess.
+
+20.4 Honest limits. On PiMesh hardware the board's 14 dB
+frontend-LNA lift is backed out first (exactly like RSSI, para
+3.1), so the number sits about 14 dB below what an uncorrected
+driver reports for the same air. The floor reflects everything
+this box's receiver hears — nearby electronics, band traffic —
+so compare only like with like, and never read it as distance.
