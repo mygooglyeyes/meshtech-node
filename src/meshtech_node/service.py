@@ -18,6 +18,7 @@ import logging
 import random
 import secrets
 import time
+from pathlib import Path
 from typing import Dict, Optional
 
 from . import codec
@@ -26,7 +27,7 @@ from .healthfacts import HealthTracker
 from .budget import BudgetLimiter, RefreshDedupe, RefreshRateLimiter
 from .charts import NodeChartBook
 from .clinic import ClinicIngest
-from .config import Settings
+from .config import Settings, data_dir
 from .feedbuilder import FeedBuilder, OutPacket, route_id as route_id_of
 from .flags import TroubleFlags
 from .grid import GridGeometry
@@ -109,13 +110,19 @@ class ScopeService:
         # repeater tags, not nodes, and cannot be re-placed later).
         self.store.section_of = self.builder_section_of
         # Host identity: explicit origin (tests) > config origin_hex >
-        # a random id persisted nowhere (log notes the derivation).
+        # ONE persisted key (Brett, 2026-10-02: "stop with the
+        # rotating key" - a fresh random id every boot made each boot
+        # look like a different box). Minted once, saved beside the
+        # data dir, reused every boot; a peer LAYOUT wearing the same
+        # key is caught loudly in _on_peer_layout.
         if origin is not None:
             self.origin = origin & 0xFFFF
         else:
             cfg_hex = (settings.feed.origin_hex or "").lower().removeprefix("0x")
-            self.origin = int(cfg_hex, 16) if cfg_hex else \
-                secrets.randbits(16)
+            if cfg_hex:
+                self.origin = int(cfg_hex, 16)
+            else:
+                self.origin = self._load_or_mint_origin()
         self.budget = BudgetLimiter(
             settings.radio, settings.feed.max_packets_per_hour,
             settings.feed.max_duty_percent)
@@ -228,6 +235,46 @@ class ScopeService:
                                     now=self.started_at)
             self.store.add_node_class(prefix, node_class)
 
+    # ------------------------------------------------------------------ origin key
+
+    def _load_or_mint_origin(self) -> int:
+        """The box's ONE 2-byte key: reuse the saved one every boot;
+        mint + save only when none exists yet - NEVER rotated (Brett,
+        2026-10-02: "a single non-rotating key"). The peer-LAYOUT
+        check in _on_peer_layout cries loudly on a collision. Every
+        file failure is said out loud; an unsaved key honestly warns
+        that it will not survive a restart."""
+        path = Path(data_dir()) / "origin.hex"
+        try:
+            saved = path.read_text(encoding="utf-8").strip().lower()
+        except FileNotFoundError:
+            saved = ""
+        except OSError as exc:
+            log.warning("origin key file %s unreadable (%s) - a fresh "
+                        "key is minted for this boot", path, exc)
+            saved = ""
+        if saved:
+            hex4 = saved.removeprefix("0x")
+            if len(hex4) == 4 and all(c in "0123456789abcdef"
+                                      for c in hex4):
+                value = int(hex4, 16)
+                log.info("origin %04x loaded from %s (the same key "
+                         "every boot)", value, path)
+                return value
+            log.warning("origin key file %s holds %r (not 4 hex "
+                        "chars) - minting a fresh key", path, saved)
+        value = secrets.randbits(16)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{value:04x}\n", encoding="utf-8")
+            log.info("origin %04x minted ONCE and saved to %s (the "
+                     "same key every boot from now on)", value, path)
+        except OSError as exc:
+            log.error("cannot save the origin key to %s (%s) - this "
+                      "boot's key %04x will NOT survive a restart",
+                      path, exc, value)
+        return value
+
     # ------------------------------------------------------------------ RX
 
     async def on_packet(self, obj: object, sender_prefix: str, *,
@@ -290,6 +337,16 @@ class ScopeService:
             # anonymous or our own packet echoed back - v0.0.051:
             # this silent return hid one of the "33 unexplained
             # decodes", so it is counted and said at DEBUG now.
+            # ON TOP (the periodic collision check, Brett 2026-10-02):
+            # an echo describes OUR area; a DIFFERENT box wearing our
+            # key does not - and that mix must never pass in silence.
+            if layout.origin == self.origin and self._foreign_layout(layout):
+                log.error("ORIGIN COLLISION: a different box (%r, "
+                          "%dx%d grid) beacons with OUR key %04x - "
+                          "its facts and ours would look like one "
+                          "box. Set feed.origin_hex on one of us.",
+                          layout.name or "?", layout.grid, layout.rows,
+                          self.origin)
             self._layout_echo += 1
             log.debug("Layout from origin %04x dropped - own echo or "
                       "anonymous (%d so far)", layout.origin,
@@ -300,6 +357,18 @@ class ScopeService:
         log.info("Peer %04x (%s): %dx%d grid, span %.0f km, %d peer(s) known",
                  peer.origin, peer.name or "?", layout.grid, layout.grid,
                  layout.span_m / 1000.0, self.peers.count())
+
+    def _foreign_layout(self, layout: codec.Layout) -> bool:
+        """True when a LAYOUT wearing our OWN key describes a
+        DIFFERENT box: our echo matches our broadcast byte for byte,
+        a colliding peer's box does not (name or geometry differ)."""
+        area = self.settings.area
+        return (layout.name != area.name[:codec.MAX_NAME]
+                or layout.grid != area.grid
+                or layout.rows != area.rows
+                or abs(layout.center_lat - area.center_lat) > 1e-6
+                or abs(layout.center_lon - area.center_lon) > 1e-6
+                or layout.span_m != int(area.span_km * 1000.0))
 
     def _i_own(self, section_id: int) -> bool:
         if not self.settings.feed.multi_host:

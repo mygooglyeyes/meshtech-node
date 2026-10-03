@@ -235,3 +235,55 @@ def test_peer_reports_ride_the_same_batch_tagged():
     decoded = codec.decode_any(pkt.payload)
     by_source = {r.source for r in decoded.records}
     assert by_source == {0xB17E, 0xBEEF}
+
+
+# ------------------------------------------------------- the name block
+# (CLINIC-WIRE.md, Brett 2026-10-02: a human reads WHO reported a
+# fact, never a boot-random 2-byte tag.)
+
+def test_box_name_rides_the_sending_packets():
+    raw = codec.encode_clinic([node_fact()], seq=11, origin=0xB17E,
+                              name="Hilltop")
+    assert raw[3] == 0x06                  # version byte = named shape
+    decoded = codec.decode_any(raw)
+    assert decoded.name == "Hilltop"
+    assert codec.encode_clinic(decoded.records, seq=decoded.seq,
+                               origin=decoded.origin,
+                               name=decoded.name) == raw
+
+
+def test_no_name_keeps_the_old_05_bytes():
+    """A nameless sender stays proto 0x05: an old packet decodes with
+    name "" and re-encodes byte-identical - old boxes and old golden
+    vectors both keep working."""
+    old = codec.encode_clinic([node_fact()], seq=11, origin=0xB17E)
+    assert old[3] == 0x05                  # version byte = old shape
+    decoded = codec.decode_any(old)
+    assert decoded.name == ""
+    assert codec.encode_clinic(decoded.records, seq=decoded.seq,
+                               origin=decoded.origin) == old
+
+
+def test_cut_inside_the_name_block_is_a_loud_error():
+    raw = codec.encode_clinic([node_fact()], seq=11, origin=0xB17E,
+                              name="Hilltop")
+    for cut in range(3, len(raw)):
+        with pytest.raises(codec.CodecError):
+            codec.decode_any(raw[:cut])
+
+
+def test_box_name_longer_than_the_wire_is_refused():
+    with pytest.raises(codec.CodecError):
+        codec.encode_clinic([node_fact()], seq=1,
+                            name="x" * (codec.MAX_NAME + 1))
+
+
+def test_builder_stamps_its_own_name():
+    """The batch carries the SENDING box's name - the same name its
+    LAYOUT announces (here: area.name 'Test')."""
+    builder, store = make_builder()
+    pkt = builder.build_clinic_batch(FakeBook([node_fact()]),
+                                     FakePeers(), now=time.time())
+    decoded = codec.decode_any(pkt.payload)
+    assert decoded.name == "Test"
+    assert decoded.origin == 0xB17E

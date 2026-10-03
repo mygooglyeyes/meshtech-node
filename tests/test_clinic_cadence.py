@@ -282,10 +282,11 @@ def test_forget_node_leaves_no_orphan_clinic_rows(tmp_path):
 
 @pytest.mark.asyncio
 async def test_batch_cap_overflow_rotates_unmintable_refused_loudly(caplog):
-    """The cap is real and honest: 7 node facts fill the 163 B packet
-    to the very byte; the overflow ROTATES to the next beat (never
-    dropped); a fact the wire can never carry is refused with a loud
-    warning - never pinned to a plausible constant."""
+    """The cap is real and honest: whole node facts fill the 163 B
+    packet to the very byte (the name block rides in front and its
+    bytes are counted too); the overflow ROTATES to the next beat
+    (never dropped); a fact the wire can never carry is refused with
+    a loud warning - never pinned to a plausible constant."""
     svc, radio = make_clinic_service(pulse_interval_seconds=0.0,
                                      layout_interval_seconds=3600.0)
     now = time.time()
@@ -307,9 +308,15 @@ async def test_batch_cap_overflow_rotates_unmintable_refused_loudly(caplog):
                 await task
     sizes = [len(p) for p in clinic_batches(radio)[:2]]
     batches = [codec.decode_any(p) for p in clinic_batches(radio)[:2]]
-    # the boundary: 7 node facts = exactly 163 B and exactly 7 records
-    assert sizes[0] == codec.MAX_CHANNEL_DATA
-    assert len(batches[0].records) == codec.CLINIC_MAX_RECORDS
+    # the boundary: whole facts only, filled to the last fact that
+    # still fits - the name block rides in front and its bytes count
+    assert batches[0].name == svc.builder._clinic_name()
+    overhead = svc.builder._clinic_overhead()
+    one = len(codec.encode_clinic_record(batches[0].records[0]))
+    fit = len(batches[0].records)
+    assert sizes[0] == overhead + fit * one          # no partial facts
+    assert sizes[0] + one > codec.MAX_CHANNEL_DATA   # next one doesn't fit
+    assert fit < codec.CLINIC_MAX_RECORDS            # byte cap binds first
     for size, batch in zip(sizes, batches):
         assert size <= codec.MAX_CHANNEL_DATA
         assert len(batch.records) <= codec.CLINIC_MAX_RECORDS
@@ -318,7 +325,7 @@ async def test_batch_cap_overflow_rotates_unmintable_refused_loudly(caplog):
              if isinstance(r, codec.ClinicNodeFact)}
     second = {r.prefix for r in batches[1].records
               if isinstance(r, codec.ClinicNodeFact)}
-    assert first == {0x30 + i for i in range(7)}
+    assert first == {0x30 + i for i in range(fit)}
     assert {0x37, 0x38, 0x39} <= second
     # refused LOUDLY, never pinned: no node fact for 0xEE anywhere
     # (a clamped 127 dB SNR would be a fabricated number)

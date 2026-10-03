@@ -904,6 +904,10 @@ class Clinic:
     seq: int
     origin: int
     records: List[object] = field(default_factory=list)
+    # The SENDING box's own name (CLINIC-WIRE.md's name block,
+    # proto 0x06): "" = the sender sent no name - an honest gap,
+    # never an invented label.
+    name: str = ""
 
 
 def _i8(value: int, what: str) -> int:
@@ -1267,13 +1271,27 @@ def _decode_clinic_record(payload: bytes, off: int) -> Tuple[object, int]:
 
 
 def encode_clinic(records: List[object], *, seq: int,
-                  origin: int = 0) -> bytes:
+                  origin: int = 0, name: str = "") -> bytes:
     """Full CLINIC plaintext (with envelope). Hard caps from the wire
-    page: at most 7 records, whole plaintext <= MAX_CHANNEL_DATA."""
+    page: at most 7 records, whole plaintext <= MAX_CHANNEL_DATA.
+
+    name = the SENDING box's own name. A non-empty name adds the
+    wire page's name block and declares proto 0x06; an empty name
+    keeps the old 0x05 bytes exactly (an older box's packet
+    re-encodes byte-identical - the old golden vectors prove it).
+    """
     if len(records) > CLINIC_MAX_RECORDS:
         raise CodecError(f"too many clinic records: {len(records)} > "
                          f"{CLINIC_MAX_RECORDS}")
-    body = pack_header(seq, origin)
+    name_bytes = (name or "").encode("utf-8")
+    if len(name_bytes) > MAX_NAME:
+        raise CodecError(f"clinic box name longer than {MAX_NAME} B "
+                         f"({len(name_bytes)} B)")
+    if name_bytes:
+        body = pack_header(seq, origin, version=0x06)
+        body += struct.pack("<B", len(name_bytes)) + name_bytes
+    else:
+        body = pack_header(seq, origin)
     body += struct.pack("<B", len(records))
     for record in records:
         body += encode_clinic_record(record)
@@ -1285,8 +1303,26 @@ def encode_clinic(records: List[object], *, seq: int,
 
 
 def decode_clinic(payload: bytes) -> Clinic:
-    """Decode a CLINIC body (envelope already stripped)."""
+    """Decode a CLINIC body (envelope already stripped).
+
+    proto 0x06 carries the name block right after the header; an
+    older (0x05) packet has none - read as name "" (no name known),
+    never misread with the wrong offsets.
+    """
     header, off = unpack_header(payload)
+    name = ""
+    if header.version >= 0x06:
+        if len(payload) < off + 1:
+            raise CodecError("CLINIC too short (name_len)")
+        name_len = payload[off]
+        off += 1
+        if len(payload) < off + name_len:
+            raise CodecError("CLINIC name block truncated")
+        try:
+            name = payload[off:off + name_len].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CodecError(f"CLINIC name is not utf-8: {exc}") from exc
+        off += name_len
     if len(payload) < off + 1:
         raise CodecError("CLINIC too short (count)")
     count = payload[off]
@@ -1295,7 +1331,8 @@ def decode_clinic(payload: bytes) -> Clinic:
     for _ in range(count):
         record, off = _decode_clinic_record(payload, off)
         records.append(record)
-    return Clinic(seq=header.seq, origin=header.origin, records=records)
+    return Clinic(seq=header.seq, origin=header.origin, records=records,
+                  name=name)
 
 
 # --------------------------------------------------------------------------

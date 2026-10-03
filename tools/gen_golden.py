@@ -85,6 +85,23 @@ def main() -> int:
             key_b=bytes.fromhex("a1a2a3a4a5a6a7a8"), last_age_min=7),
     ], seq=0x0114, origin=0xB17E)
 
+    # THE NAME BLOCK (CLINIC-WIRE.md, Brett 2026-10-02): proto 0x06
+    # carries the SENDING box's name right after the header - a
+    # human reads "Hilltop", never a boot-random 2-byte tag. The
+    # kinds 1-4 "clinic" vector above STAYS 0x05 on purpose: an
+    # old/nameless sender must keep decoding and re-encoding
+    # byte-identical in both codecs.
+    clinic_named = codec.encode_clinic([
+        codec.ClinicNodeFact(source=0xB17E, prefix=0x21, last_age_min=3,
+                             age_days=5, strip=0x800007, hops_typ=2,
+                             share_pct=37, snr_ewma=20, snr_best=36,
+                             snr_worst=4, snr_sd=16, rssi_ewma=-90,
+                             rssi_best=-80, rssi_worst=-100, rssi_sd=10),
+        codec.ClinicPeerFact(source=0xBEEF, report=codec.REPORT_PULSE,
+                             subject=0, heard_age_min=4,
+                             values=(1234, 4, 40, 9)),
+    ], seq=0x0115, origin=0xB17E, name="Hilltop")
+
     vectors = {
         "pulse": pulse.hex(),
         "sect_sum": sect.hex(),
@@ -94,6 +111,7 @@ def main() -> int:
         "refresh": refresh.hex(),
         "clinic": clinic.hex(),
         "clinic_health": clinic_health.hex(),
+        "clinic_named": clinic_named.hex(),
     }
     out_json = Path(__file__).resolve().parent.parent / "tests" / \
         "golden_vectors.json"

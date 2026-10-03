@@ -96,6 +96,19 @@ class FeedBuilder:
 
     # ------------------------------------------------------ clinic batches
 
+    def _clinic_name(self) -> str:
+        """This box's own name on the clinic wire - the SAME name its
+        LAYOUT announces (CLINIC-WIRE.md's name block, proto 0x06)."""
+        return self.settings.area.name[:codec.MAX_NAME]
+
+    def _clinic_overhead(self) -> int:
+        """Bytes every clinic packet spends before any record:
+        envelope(3) + header(5) + name block (when named) + count(1)."""
+        name = self._clinic_name()
+        if not name:
+            return 9
+        return 10 + len(name.encode("utf-8"))
+
     def build_clinic_batch(self, clinic: object, peers: object, *,
                            now: Optional[float] = None) -> Optional[OutPacket]:
         """One CLINIC batch per pulse beat (the wire page's emission
@@ -114,7 +127,7 @@ class FeedBuilder:
         start = self._clinic_cursor % len(records)
         ordered = records[start:] + records[:start]
         chunk: List[object] = []
-        used = 9            # envelope(3) + header(5) + count(1)
+        used = self._clinic_overhead()
         for record in ordered:
             if len(chunk) >= codec.CLINIC_MAX_RECORDS:
                 break
@@ -146,7 +159,8 @@ class FeedBuilder:
 
     def _clinic_packet(self, records: List[object]) -> OutPacket:
         payload = codec.encode_clinic(records, seq=self._next_seq(),
-                                      origin=self.origin)
+                                      origin=self.origin,
+                                      name=self._clinic_name())
         return OutPacket(codec.TYPE_CLINIC, payload, "clinic")
 
     def _clinic_pages(self, records: List[object]) -> List[OutPacket]:
@@ -155,7 +169,7 @@ class FeedBuilder:
         record count needs - the door has no cap to respect."""
         out: List[OutPacket] = []
         chunk: List[object] = []
-        used = 9
+        used = self._clinic_overhead()
         for record in sorted(records, key=codec.clinic_sort_key):
             wire = self._clinic_wire(record)
             if wire is None:
@@ -163,7 +177,7 @@ class FeedBuilder:
             if chunk and (len(chunk) >= codec.CLINIC_MAX_RECORDS
                           or used + len(wire) > codec.MAX_CHANNEL_DATA):
                 out.append(self._clinic_packet(chunk))
-                chunk, used = [], 9
+                chunk, used = [], self._clinic_overhead()
             chunk.append(record)
             used += len(wire)
         if chunk:

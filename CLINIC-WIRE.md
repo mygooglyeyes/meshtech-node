@@ -22,8 +22,18 @@ CLINIC packet:
   data_type (2 LE) = 0x5314
   data_len  (1)    = length of body
   body:
-    header (5)     = proto_version(1)=0x05 + seq(2 LE) + origin(2 LE)
+    header (5)     = proto_version(1) + seq(2 LE) + origin(2 LE)
                      origin = the box SENDING this packet
+                     version 0x06 = the name block below is present
+                     version 0x05 = no name block (an older or
+                     nameless sender - the decoder accepts both
+                     and reads a missing name as "no name known")
+    name block     = name_len(1) + name(name_len bytes, UTF-8,
+                     <= 31): the SENDING box's own name - the same
+                     name its LAYOUT announces. It names only the
+                     sender; it never renames a fact's source.
+                     No name sent = an honest gap on the phone,
+                     never an invented label.
     count   (1)    = number of records (0..7)
     records (each): kind(1) + len(1) + payload(len bytes)
 ```
